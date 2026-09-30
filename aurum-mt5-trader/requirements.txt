@@ -1,0 +1,5 @@
+MetaTrader5>=5.0.45; platform_system == "Windows"
+Jinja2>=3.1
+pandas>=2.0
+python-dotenv>=1.0
+pytest>=8.0
