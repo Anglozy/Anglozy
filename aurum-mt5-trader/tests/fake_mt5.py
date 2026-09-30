@@ -52,6 +52,7 @@ class FakeMT5:
         self.send_results: list = []
         self.sent: list[dict] = []
         self.rates_calls: list[tuple] = []
+        self.rates: dict[int, np.ndarray] = {}  # timeframe -> bars incl. forming bar
         self.positions: list = []
         self.orders: list = []
 
@@ -86,6 +87,10 @@ class FakeMT5:
 
     def copy_rates_from_pos(self, symbol, timeframe, start, count):
         self.rates_calls.append((symbol, timeframe, start, count))
+        if timeframe in self.rates:
+            arr = self.rates[timeframe]
+            end = len(arr) - start
+            return arr[max(0, end - count):end]
         dtype = [("time", "<i8"), ("open", "<f8"), ("high", "<f8"), ("low", "<f8"),
                  ("close", "<f8"), ("tick_volume", "<u8"), ("spread", "<i4"), ("real_volume", "<u8")]
         rows = [(1_790_000_000 + i * 900, 2650 + i, 2652 + i, 2649 + i, 2651 + i, 100, 30, 0)

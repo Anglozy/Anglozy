@@ -23,37 +23,44 @@ reports with Jinja2.
 
 ```
 aurum-mt5-trader/
-├── config/          # settings.py (terminal credentials, trading settings) and strategy parameters
+├── main.py          # entry point: connect -> fetch bars -> pipeline -> report -> order
+├── config/          # settings.py (credentials, trading settings), strategy.py (StrategyParameters)
 ├── src/
 │   ├── aurum/       # Jinja2 HTML report generator and CSS styles
 │   ├── mt5/         # MT5 terminal connection, order placement, market data fetcher
-│   └── signals/     # Fair Value Gap, Order Block, liquidity sweep detection
-├── templates/       # Aurum HTML output templates (*.html.j2)
-├── tests/           # pytest suites
+│   └── signals/     # FVG, structure, Order Block, session sweep detectors + parser.py pipeline
+├── templates/       # Aurum HTML output templates
+├── tests/           # pytest suites (fake_mt5.py, scenarios.py hold shared fixtures)
 └── reports/         # generated Aurum HTML files (git-ignored output)
 ```
 
 ## Strict modular design
 
-Each package has one responsibility and a narrow, explicit dependency direction:
+Each module has one responsibility and a narrow, explicit dependency direction:
 
 ```
-config ──▶ mt5 ──▶ signals ──▶ aurum
+config ──▶ signals detectors (pure)
+config ──▶ mt5 (MetaTrader5 I/O)        aurum (rendering)
+                  ╲                     ╱
+                   ▶ signals/parser.py ◀        ◀── main.py
 ```
 
 - **`src/mt5`** is the *only* package allowed to `import MetaTrader5`. Everything else
   receives plain Python data (dataclasses, lists, or pandas DataFrames) — never raw
   MT5 objects.
-- **`src/signals`** contains pure functions: OHLC data in, detected signals out. No I/O,
-  no MT5 calls, no network, no clock reads. This keeps detection logic deterministic
-  and fully unit-testable.
+- **Signal detectors** (`signals/fvg.py`, `structure.py`, `order_block.py`,
+  `liquidity.py`) are pure functions: OHLC DataFrame in, dataclasses out. No I/O, no
+  MT5 calls, no network, no clock reads. They import only `config` and each other.
+- **`signals/parser.py`** is the one orchestration module. `find_setup()` stays pure;
+  `SignalPipeline` receives an `MT5Connector`, `MT5Executor` and
+  `AurumReportGenerator` and wires them together. Keep new I/O here, not in detectors.
 - **`src/aurum`** only renders data it is given. It must not fetch market data or
-  place orders.
+  place orders. `mt5` and `aurum` never import each other or `signals`.
+- **MT5 bar times are broker server time**, not UTC. Session logic takes a
+  `utc_offset_hours`; never compare bar times to UTC hours directly.
 - **`config`** holds settings and parameters only — no logic beyond validation.
-- No circular imports. No package may import from a package to its right in the
-  diagram above except through data it is handed.
-- Keep modules small and focused: one concept per module (e.g. `signals/fvg.py`,
-  `signals/order_block.py`, `signals/liquidity_sweep.py`).
+- No circular imports; imports only follow the arrows above.
+- Keep modules small and focused: one concept per module.
 - Public functions and classes get type hints and a short docstring.
 
 ## Configuration and secrets
@@ -90,7 +97,10 @@ pip install -r requirements.txt
 cp .env.example .env            # then fill in credentials
 pytest                          # run the test suite
 python src/aurum/generator.py   # generate a sample XAUUSD report
+python main.py --dry-run        # run the live pipeline without sending orders
+python main.py --interval 60    # run every 60s, placing orders (demo accounts only)
 ```
 
-Scripts importing `config` or `src/` packages run from the project root with
-`PYTHONPATH=.;src` (Windows) or `PYTHONPATH=.:src`; pytest sets this automatically.
+`main.py` adds `src/` to `sys.path` itself. Other scripts importing `config` or `src/`
+packages need `PYTHONPATH=.;src` (Windows) or `PYTHONPATH=.:src`; pytest sets this
+automatically.
