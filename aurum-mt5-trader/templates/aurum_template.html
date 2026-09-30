@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aurum Report · {{ setup.pair }} {{ setup.direction }}</title>
+  <style>
+{{ styles | safe }}
+  </style>
+</head>
+<body>
+<main class="page">
+
+  <!-- ===== Header ===== -->
+  <header class="header">
+    <div>
+      <p class="brand">Aurum · Trade Intelligence</p>
+      <h1 class="title"><span class="pair">{{ setup.pair }}</span> {{ setup.direction }} Setup</h1>
+    </div>
+    <div class="meta">
+      <div>Strategy <strong>{{ strategy_name }}</strong></div>
+      <div>Generated <strong>{{ generated_at }}</strong></div>
+      <div>Report ID <strong>{{ report_id }}</strong></div>
+    </div>
+  </header>
+
+  <!-- ===== Headline metrics ===== -->
+  <section class="section">
+    <div class="grid">
+      <div class="card accent">
+        <p class="card-label">Direction</p>
+        <p class="card-value gold">{{ setup.direction }}</p>
+        <p class="card-sub">{{ setup.order_type }}</p>
+      </div>
+      <div class="card">
+        <p class="card-label">Entry</p>
+        <p class="card-value">{{ setup.entry | price(digits) }}</p>
+        <p class="card-sub">Stop distance {{ risk.sl_distance | price(digits) }}</p>
+      </div>
+      <div class="card">
+        <p class="card-label">Risk : Reward</p>
+        <p class="card-value gold">1 : {{ "%.2f" | format(risk.primary_rr) }}</p>
+        <p class="card-sub">To {{ setup.take_profits[0].label }}</p>
+      </div>
+      <div class="card">
+        <p class="card-label">Recommended Lot</p>
+        <p class="card-value" id="lot-headline">{{ "%.2f" | format(risk.lot_size) }}</p>
+        <p class="card-sub">Risking {{ "%.2f" | format(risk.risk_percent) }}% · {{ risk.currency }} {{ "{:,.2f}".format(risk.risk_amount) }}</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 1. Multi-timeframe analysis ===== -->
+  <section class="section">
+    <h2 class="section-title">Multi-Timeframe Analysis</h2>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="tf-head">
+          <div>
+            <div class="tf-role">Higher Timeframe · Bias</div>
+            <h3 class="tf-name">{{ htf.timeframe }}</h3>
+          </div>
+          <span class="badge {{ htf.bias | lower }}">{{ htf.bias }}</span>
+        </div>
+        <ul class="kv">
+          <li><span class="k">Market structure</span><span class="v">{{ htf.structure }}</span></li>
+          <li><span class="k">Key level</span><span class="v">{{ htf.key_level }}</span></li>
+          <li><span class="k">Draw on liquidity</span><span class="v">{{ htf.draw_on_liquidity }}</span></li>
+        </ul>
+        {% if htf.notes %}<p class="notes">{{ htf.notes }}</p>{% endif %}
+      </div>
+      <div class="card">
+        <div class="tf-head">
+          <div>
+            <div class="tf-role">Lower Timeframe · Trigger</div>
+            <h3 class="tf-name">{{ ltf.timeframe }}</h3>
+          </div>
+          <span class="badge {{ ltf.bias | lower }}">{{ ltf.bias }}</span>
+        </div>
+        <ul class="kv">
+          <li><span class="k">Trigger</span><span class="v">{{ ltf.trigger }}</span></li>
+          <li><span class="k">Confirmation</span><span class="v">{{ ltf.confirmation }}</span></li>
+          <li><span class="k">Liquidity sweep</span><span class="v">{{ ltf.liquidity_sweep }}</span></li>
+        </ul>
+        {% if ltf.notes %}<p class="notes">{{ ltf.notes }}</p>{% endif %}
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 2. Setup parameters ===== -->
+  <section class="section">
+    <h2 class="section-title">Setup Parameters</h2>
+    <div class="grid grid-2">
+      <div class="card">
+        <p class="card-label">Pair</p>
+        <p class="card-value gold">{{ setup.pair }}</p>
+
+        <div class="level entry" data-copy="{{ setup.entry | price(digits) }}">
+          <span class="name">Entry</span><span class="price">{{ setup.entry | price(digits) }}</span>
+        </div>
+        <div class="level" data-copy="{{ setup.fvg_low | price(digits) }} - {{ setup.fvg_high | price(digits) }}">
+          <span class="name">Fair Value Gap</span>
+          <span class="price">{{ setup.fvg_low | price(digits) }} – {{ setup.fvg_high | price(digits) }}</span>
+        </div>
+        {% for ob in setup.order_blocks %}
+        <div class="level" data-copy="{{ ob.low | price(digits) }} - {{ ob.high | price(digits) }}">
+          <span class="name">{{ ob.label }}</span>
+          <span class="price">{{ ob.low | price(digits) }} – {{ ob.high | price(digits) }}</span>
+        </div>
+        {% endfor %}
+        <p class="hint">Click any level to copy it to the clipboard.</p>
+      </div>
+
+      <div class="card">
+        <p class="card-label">Exits</p>
+        <div class="level sl" data-copy="{{ setup.stop_loss | price(digits) }}">
+          <span class="name">Stop Loss</span><span class="price">{{ setup.stop_loss | price(digits) }}</span>
+        </div>
+        {% for tp in setup.take_profits %}
+        <div class="level tp" data-copy="{{ tp.price | price(digits) }}">
+          <span class="name">{{ tp.label }}{% if tp.close_percent %} · close {{ tp.close_percent }}%{% endif %}</span>
+          <span class="price">{{ tp.price | price(digits) }}</span>
+        </div>
+        {% endfor %}
+        {% if setup.invalidation %}<p class="notes">Invalidation: {{ setup.invalidation }}</p>{% endif %}
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 3. Performance / risk metrics ===== -->
+  <section class="section">
+    <h2 class="section-title">Risk &amp; Reward</h2>
+    <div class="grid grid-2">
+      <div class="card">
+        <p class="card-label">Targets</p>
+        <table class="rr-table">
+          <thead>
+            <tr><th>Target</th><th>Price</th><th>Distance</th><th>R:R</th></tr>
+          </thead>
+          <tbody>
+            {% for tp in setup.take_profits %}
+            <tr>
+              <td>{{ tp.label }}</td>
+              <td>{{ tp.price | price(digits) }}</td>
+              <td>{{ tp.distance | price(digits) }}</td>
+              <td class="gold">1 : {{ "%.2f" | format(tp.rr) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card accent">
+        <p class="card-label">Position Size Calculator</p>
+        <p class="card-value gold"><span id="lot-calc">{{ "%.2f" | format(risk.lot_size) }}</span> lots</p>
+        <p class="card-sub">
+          Risk <span id="risk-calc">{{ risk.currency }} {{ "{:,.2f}".format(risk.risk_amount) }}</span>
+          over a {{ risk.sl_distance | price(digits) }} stop
+        </p>
+        <div class="calc">
+          <div>
+            <label for="balance">Account balance ({{ risk.currency }})</label>
+            <input id="balance" type="number" min="0" step="100" value="{{ risk.account_balance }}">
+          </div>
+          <div>
+            <label for="risk-pct">Risk per trade (%)</label>
+            <input id="risk-pct" type="number" min="0" max="100" step="0.1" value="{{ risk.risk_percent }}">
+          </div>
+        </div>
+        <p class="hint">Contract size {{ risk.contract_size }} · lot step {{ risk.lot_step }} · min lot {{ risk.min_lot }}</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 4. Charts ===== -->
+  <section class="section">
+    <h2 class="section-title">Chart Evidence</h2>
+    <div class="grid grid-2">
+      {% for chart in charts %}
+      <figure class="card chart">
+        {% if chart.src %}
+        <img src="{{ chart.src }}" alt="{{ chart.title }}">
+        {% else %}
+        <div class="chart-placeholder">
+          <span class="icon">◇</span>
+          <span>{{ chart.title }} screenshot</span>
+          <span>Pass an image path to embed it here</span>
+        </div>
+        {% endif %}
+        <figcaption><strong>{{ chart.title }}</strong>{% if chart.caption %} — {{ chart.caption }}{% endif %}</figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+  </section>
+
+  <footer class="footer">
+    Generated by Aurum MT5 Trader. For analysis purposes only; not financial advice.
+    Past performance does not guarantee future results.
+  </footer>
+</main>
+
+<script>
+(function () {
+  var cfg = {{ calc_config | tojson }};
+
+  // Copy a price level to the clipboard on click.
+  document.querySelectorAll(".level[data-copy]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      var text = el.getAttribute("data-copy");
+      if (navigator.clipboard) { navigator.clipboard.writeText(text).catch(function () {}); }
+      el.classList.add("copied");
+      setTimeout(function () { el.classList.remove("copied"); }, 900);
+    });
+  });
+
+  // Recalculate lot size when balance or risk % changes.
+  var balance = document.getElementById("balance");
+  var riskPct = document.getElementById("risk-pct");
+  var fmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  function recalc() {
+    var riskAmount = (parseFloat(balance.value) || 0) * (parseFloat(riskPct.value) || 0) / 100;
+    var lossPerLot = cfg.sl_distance * cfg.contract_size;
+    var lots = lossPerLot > 0 ? Math.floor(riskAmount / lossPerLot / cfg.lot_step + 1e-9) * cfg.lot_step : 0;
+    lots = Math.min(lots, cfg.max_lot);
+    var text = lots < cfg.min_lot ? "< " + cfg.min_lot.toFixed(2) : lots.toFixed(2);
+    document.getElementById("lot-calc").textContent = text;
+    document.getElementById("lot-headline").textContent = text;
+    document.getElementById("risk-calc").textContent = cfg.currency + " " + fmt.format(riskAmount);
+  }
+
+  balance.addEventListener("input", recalc);
+  riskPct.addEventListener("input", recalc);
+})();
+</script>
+</body>
+</html>
