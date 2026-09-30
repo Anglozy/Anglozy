@@ -26,6 +26,7 @@ for path in (ROOT / "src", ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from aurum.capturer import ChartCapturer  # noqa: E402
 from aurum.generator import AurumReportGenerator  # noqa: E402
 from config.settings import load_settings  # noqa: E402
 from config.strategy import StrategyParameters  # noqa: E402
@@ -49,6 +50,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--utc-offset", type=int, default=None,
                         help="broker server time offset from UTC in hours (default: estimate from last tick)")
     parser.add_argument("--reports-dir", type=Path, default=ROOT / "reports")
+    parser.add_argument("--no-charts", action="store_true",
+                        help="skip TradingView chart screenshots in the report")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
 
@@ -66,12 +69,21 @@ def run(args: argparse.Namespace, mt5_module: Any | None = None) -> int:
         logger.error("Could not connect to MT5: %s", exc)
         return EXIT_CONNECTION
 
+    capturer = None
+    if settings.charts.enabled and not args.no_charts:
+        capturer = ChartCapturer(
+            images_dir=args.reports_dir / "images",
+            exchange=settings.charts.exchange,
+            executable_path=settings.charts.chromium_path,
+        )
+
     pipeline = SignalPipeline(
         connector,
         MT5Executor(connector),
         AurumReportGenerator(output_dir=args.reports_dir),
         params,
         execute=not args.dry_run,
+        chart_capturer=capturer,
     )
     exit_code = EXIT_OK
     try:

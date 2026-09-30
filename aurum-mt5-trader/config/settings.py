@@ -60,9 +60,19 @@ class TradingSettings:
 
 
 @dataclass(frozen=True)
+class ChartSettings:
+    """TradingView screenshots embedded in Aurum reports."""
+
+    enabled: bool = True
+    exchange: str = "OANDA"  # TradingView prefix, e.g. OANDA:XAUUSD
+    chromium_path: str | None = None  # None = Playwright's own Chromium
+
+
+@dataclass(frozen=True)
 class Settings:
     credentials: MT5Credentials
     trading: TradingSettings
+    charts: ChartSettings = field(default_factory=ChartSettings)
 
 
 def load_settings(env_file: str | Path | None = PROJECT_ROOT / ".env") -> Settings:
@@ -87,7 +97,12 @@ def load_settings(env_file: str | Path | None = PROJECT_ROOT / ".env") -> Settin
         deviation_points=_env_int("AURUM_DEVIATION_POINTS") or DEFAULT_DEVIATION_POINTS,
         allow_live_trading=_env_bool("AURUM_ALLOW_LIVE_TRADING"),
     )
-    return Settings(credentials=credentials, trading=trading)
+    charts = ChartSettings(
+        enabled=_env_bool("AURUM_CHARTS_ENABLED", default=True),
+        exchange=os.getenv("AURUM_TV_EXCHANGE") or "OANDA",
+        chromium_path=os.getenv("AURUM_CHROMIUM_PATH") or None,
+    )
+    return Settings(credentials=credentials, trading=trading, charts=charts)
 
 
 def _env_int(name: str) -> int | None:
@@ -110,5 +125,8 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a number, got {value!r}") from None
 
 
-def _env_bool(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}

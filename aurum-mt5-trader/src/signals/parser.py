@@ -22,6 +22,7 @@ Setup model (buy side; sells mirror it):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from dataclasses import dataclass
@@ -31,9 +32,9 @@ from typing import Literal
 
 import pandas as pd
 
+from aurum.capturer import ChartCapturer
 from aurum.generator import (
     AurumReportGenerator,
-    ChartImage,
     HTFAnalysis,
     LTFAnalysis,
     PriceZone,
@@ -309,8 +310,11 @@ def build_trade_report(
     account: AccountSnapshot,
     spec: SymbolSpec,
     risk_percent: float,
+    htf_chart: str | Path | None = None,
+    ltf_chart: str | Path | None = None,
 ) -> TradeReport:
-    """Map a signal plus the MT5-calculated lot size onto an Aurum report."""
+    """Map a signal plus the MT5-calculated lot size (and optional chart
+    screenshots) onto an Aurum report."""
     d = spec.digits
     fmt = lambda x: f"{x:.{d}f}"  # noqa: E731
     is_buy = signal.direction == "BUY"
@@ -371,10 +375,8 @@ def build_trade_report(
             max_lot=spec.volume_max,
             currency=account.currency,
         ),
-        charts=[
-            ChartImage(f"{signal.htf_timeframe} Bias", caption="Structure and higher-timeframe order block"),
-            ChartImage(f"{signal.ltf_timeframe} Entry", caption="Session sweep, structure break and FVG"),
-        ],
+        htf_chart=htf_chart,
+        ltf_chart=ltf_chart,
         strategy_name="ICT · Sweep + FVG + OB",
         digits=d,
     )
@@ -394,10 +396,11 @@ class PipelineResult:
     lot_size: float | None = None
     report_path: Path | None = None
     order: OrderResult | None = None
+    chart_paths: tuple[str | None, str | None] = (None, None)  # HTF, LTF screenshots
 
 
 class SignalPipeline:
-    """Fetch bars -> find setup -> size with MT5 -> Aurum report -> place order."""
+    """Fetch bars -> find setup -> size with MT5 -> chart screenshots -> Aurum report -> place order."""
 
     def __init__(
         self,
@@ -406,12 +409,14 @@ class SignalPipeline:
         report_generator: AurumReportGenerator,
         params: StrategyParameters | None = None,
         execute: bool = True,
+        chart_capturer: ChartCapturer | None = None,
     ) -> None:
         self.connector = connector
         self.executor = executor
         self.report_generator = report_generator
         self.params = params or StrategyParameters()
         self.execute = execute
+        self.chart_capturer = chart_capturer
         self._last_signal_key: tuple | None = None
 
     def run(self, symbol: str | None = None) -> PipelineResult:
@@ -448,12 +453,13 @@ class SignalPipeline:
             logger.warning("%s: %s", symbol, exc)
             return PipelineResult("skipped", str(exc), signal)
 
-        report_path = self._write_report(signal, symbol, lot, spec)
+        charts = self._capture_charts(symbol)
+        report_path = self._write_report(signal, symbol, lot, spec, charts)
 
         if not self.execute:
             self._last_signal_key = key
             return PipelineResult("reported", "Dry run: report generated, no order sent",
-                                  signal, lot, report_path)
+                                  signal, lot, report_path, chart_paths=charts)
 
         expiration = None
         if p.order_expiry_minutes:
@@ -472,18 +478,55 @@ class SignalPipeline:
             )
         except OrderValidationError as exc:
             logger.error("%s order not sent: %s", symbol, exc)
-            return PipelineResult("order_failed", str(exc), signal, lot, report_path)
+            return PipelineResult("order_failed", str(exc), signal, lot, report_path, chart_paths=charts)
 
         if order.success:
             self._last_signal_key = key
             return PipelineResult("executed", f"Order {order.order} placed ({order.retcode_name})",
-                                  signal, lot, report_path, order)
-        return PipelineResult("order_failed", order.message, signal, lot, report_path, order)
+                                  signal, lot, report_path, order, charts)
+        return PipelineResult("order_failed", order.message, signal, lot, report_path, order, charts)
 
-    def _write_report(self, signal: TradeSignal, symbol: str, lot: float, spec: SymbolSpec) -> Path | None:
+    def _capture_charts(self, symbol: str) -> tuple[str | None, str | None]:
+        """Screenshot the HTF and LTF charts. Failures are logged and yield None:
+        a missing screenshot must never block a valid trade."""
+        if self.chart_capturer is None:
+            return None, None
+        try:
+            return asyncio.run(self._capture_both(symbol))
+        except Exception:
+            logger.exception("Chart capture failed; the report will show placeholders")
+            return None, None
+
+    async def _capture_both(self, symbol: str) -> tuple[str | None, str | None]:
+        p = self.params
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timeframes = (p.htf_timeframe, p.ltf_timeframe)
+        async with self.chart_capturer as capturer:
+            results = await asyncio.gather(
+                *(capturer.capture_chart(symbol, tf, f"{symbol}_{tf}_{stamp}.png".lower()) for tf in timeframes),
+                return_exceptions=True,
+            )
+        paths: list[str | None] = []
+        for tf, result in zip(timeframes, results):
+            if isinstance(result, BaseException):
+                logger.warning("%s %s chart not captured: %s", symbol, tf, result)
+                paths.append(None)
+            else:
+                paths.append(result)
+        return paths[0], paths[1]
+
+    def _write_report(
+        self,
+        signal: TradeSignal,
+        symbol: str,
+        lot: float,
+        spec: SymbolSpec,
+        charts: tuple[str | None, str | None] = (None, None),
+    ) -> Path | None:
         try:
             report = build_trade_report(
                 signal, symbol, lot, self.connector.account_info(), spec, self.executor.settings.risk_percent,
+                htf_chart=charts[0], ltf_chart=charts[1],
             )
             path = self.report_generator.generate(report)
             logger.info("Aurum report: %s", path)

@@ -11,6 +11,7 @@ from tests.scenarios import BULLISH_ASK, BULLISH_BID, htf_bullish, ltf_bullish, 
 def clean_env(monkeypatch):
     for name in ("MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER", "AURUM_SYMBOL", "AURUM_ALLOW_LIVE_TRADING"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AURUM_CHARTS_ENABLED", "false")  # no real browser in these tests
     monkeypatch.setattr("mt5.connector.time.sleep", lambda _: None)
 
 

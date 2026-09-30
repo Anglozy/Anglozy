@@ -15,7 +15,7 @@ import base64
 import logging
 import math
 import mimetypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -128,6 +128,11 @@ class TradeReport:
     charts: list[ChartImage] = field(default_factory=list)
     strategy_name: str = "SMC · FVG + Order Block"
     digits: int = 2
+    # Screenshot paths (e.g. from ChartCapturer) for the HTF and LTF chart slots.
+    # They replace the image of the first / second entry in ``charts``, or of the
+    # default "<HTF> Bias" / "<LTF> Entry" slots when ``charts`` is empty.
+    htf_chart: str | Path | None = None
+    ltf_chart: str | Path | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -245,7 +250,7 @@ class AurumReportGenerator:
             },
             "charts": [
                 {"title": c.title, "caption": c.caption, "src": _image_src(c.path)}
-                for c in report.charts
+                for c in _chart_slots(report)
             ],
         }
 
@@ -273,14 +278,37 @@ def _format_price(value: float, digits: int = 2) -> str:
     return f"{value:,.{digits}f}"
 
 
+def _chart_slots(report: TradeReport) -> list[ChartImage]:
+    """Chart slots to render, with ``htf_chart`` / ``ltf_chart`` placed in slots 1 and 2."""
+    defaults = [
+        ChartImage(f"{report.htf.timeframe} Bias", caption="Higher-timeframe structure and bias"),
+        ChartImage(f"{report.ltf.timeframe} Entry", caption="Lower-timeframe sweep, structure break and FVG"),
+    ]
+    slots = list(report.charts) or list(defaults)
+    for i, path in enumerate((report.htf_chart, report.ltf_chart)):
+        if path is None:
+            continue
+        if i < len(slots):
+            slots[i] = replace(slots[i], path=path)
+        else:
+            slots.append(replace(defaults[i], path=path))
+    return slots
+
+
 def _image_src(path: str | Path | None) -> str | None:
-    """Return a src usable in <img>: data URI for local files, URLs passed through."""
+    """Return a src usable in <img>: data URI for local files, URLs passed through.
+
+    Relative paths are tried against the working directory, then the project
+    root (``ChartCapturer`` returns paths like ``reports/images/x.png``).
+    """
     if path is None:
         return None
     text = str(path)
     if text.startswith(("http://", "https://", "data:")):
         return text
     file = Path(path)
+    if not file.is_absolute() and not file.is_file():
+        file = PROJECT_ROOT / file
     if not file.is_file():
         logger.warning("Chart image not found, using placeholder: %s", file)
         return None
