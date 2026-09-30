@@ -23,7 +23,7 @@ reports with Jinja2.
 
 ```
 aurum-mt5-trader/
-├── config/          # mt5_config.py (terminal/login settings) and strategy parameters
+├── config/          # settings.py (terminal credentials, trading settings) and strategy parameters
 ├── src/
 │   ├── aurum/       # Jinja2 HTML report generator and CSS styles
 │   ├── mt5/         # MT5 terminal connection, order placement, market data fetcher
@@ -58,15 +58,16 @@ config ──▶ mt5 ──▶ signals ──▶ aurum
 
 ## Configuration and secrets
 
-- Never commit account numbers, passwords or server credentials. `config/mt5_config.py`
-  reads them from environment variables (e.g. `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`,
-  `MT5_PATH`) or a git-ignored `.env` file.
+- Never commit account numbers, passwords or server credentials. `config/settings.py`
+  (`load_settings()`) reads them from environment variables (`MT5_LOGIN`, `MT5_PASSWORD`,
+  `MT5_SERVER`, `MT5_PATH`) or a git-ignored `.env` file. See `.env.example` for all keys.
 - Strategy parameters (symbol, timeframe, risk %, FVG/OB thresholds) live in `config/`,
   never hard-coded inside `src/`.
 
 ## Trading safety
 
-- Default to a **demo account**. Live trading must require an explicit opt-in flag.
+- Default to a **demo account**. `MT5Connector` refuses real accounts unless
+  `AURUM_ALLOW_LIVE_TRADING=true`.
 - Every order must carry a stop-loss. Position size is derived from risk % and stop
   distance, never a fixed lot size.
 - Check the `retcode` of every `order_send` result and log failures; never assume an
@@ -75,8 +76,8 @@ config ──▶ mt5 ──▶ signals ──▶ aurum
 ## Testing
 
 - Run tests from the project root: `pytest`
-- Tests must not require a running MT5 terminal. Mock the `MetaTrader5` module in
-  `tests/` when testing `src/mt5`.
+- Tests must not require a running MT5 terminal. Pass `tests/fake_mt5.FakeMT5` as
+  `mt5_module=` to `MT5Connector` when testing `src/mt5`.
 - Signal detectors are tested against small, hand-built OHLC fixtures with known answers.
 - New signal logic or order logic is not done until it has tests.
 
@@ -86,5 +87,10 @@ config ──▶ mt5 ──▶ signals ──▶ aurum
 python -m venv .venv
 .venv\Scripts\activate          # Windows (required for live MT5)
 pip install -r requirements.txt
+cp .env.example .env            # then fill in credentials
 pytest                          # run the test suite
+python src/aurum/generator.py   # generate a sample XAUUSD report
 ```
+
+Scripts importing `config` or `src/` packages run from the project root with
+`PYTHONPATH=.;src` (Windows) or `PYTHONPATH=.:src`; pytest sets this automatically.
