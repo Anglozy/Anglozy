@@ -34,7 +34,7 @@ from aurum.generator import AurumReportGenerator
 from config.settings import Settings, load_settings
 from config.strategy import StrategyParameters
 from mt5.connector import MT5Connector
-from mt5.executor import MT5Executor
+from mt5.executor import MT5Executor, OrderResult
 from signals.fvg import detect_fvgs
 from signals.liquidity import detect_session_sweeps
 from signals.order_block import detect_order_blocks
@@ -84,6 +84,7 @@ class Runner(Protocol):
     def run_once(self) -> dict[str, Any]: ...
     def account(self) -> dict[str, Any]: ...
     def positions(self) -> dict[str, Any]: ...
+    def close_ticket(self, ticket: int) -> dict[str, Any]: ...
     def close(self) -> None: ...
 
 
@@ -163,6 +164,14 @@ class PipelineRunner:
                 "positions": [_position_dict(p) for p in positions],
                 "orders": [_order_dict(o) for o in orders],
             }
+
+    def close_ticket(self, ticket: int) -> dict[str, Any]:
+        """Close a bot position, or cancel a bot pending order, by ticket."""
+        with self._lock:
+            self._require()
+            if any(o.ticket == ticket for o in self.executor.pending_orders(self.symbol)):
+                return _order_result_dict(self.executor.cancel_order(ticket), "cancel")
+            return _order_result_dict(self.executor.close_position(ticket), "close")
 
     def close(self) -> None:
         with self._lock:
@@ -392,6 +401,13 @@ class BotStateManager:
         if runner is None:
             raise NotConnectedError("Bot is not connected to MT5. Start it to query positions.")
         return runner.positions()
+
+    def close_ticket(self, ticket: int) -> dict[str, Any]:
+        with self._lock:
+            runner = self._runner if self.status in (BotStatus.SCANNING, BotStatus.PAUSED) else None
+        if runner is None:
+            raise NotConnectedError("Bot is not connected to MT5. Start it to manage trades.")
+        return runner.close_ticket(ticket)
 
     def wait_for_runs(self, count: int, timeout: float = 5.0) -> bool:
         """Block until at least ``count`` passes have completed (for tests and scripts)."""
@@ -625,6 +641,19 @@ def _position_dict(p: Any) -> dict[str, Any]:
         "swap": getattr(p, "swap", None),
         "time": _ts(getattr(p, "time", None)),
         "comment": getattr(p, "comment", ""),
+    }
+
+
+def _order_result_dict(result: OrderResult, action: str) -> dict[str, Any]:
+    return {
+        "action": action,
+        "success": result.success,
+        "retcode": result.retcode,
+        "retcode_name": result.retcode_name,
+        "message": result.message,
+        "ticket": result.order,
+        "deal": result.deal,
+        "price": result.price,
     }
 
 

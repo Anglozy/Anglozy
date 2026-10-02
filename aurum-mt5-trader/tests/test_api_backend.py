@@ -60,6 +60,10 @@ class FakeRunner:
     def positions(self):
         return {"symbol": "XAUUSD", "magic": MAGIC, "positions": [{"ticket": 1}], "orders": []}
 
+    def close_ticket(self, ticket):
+        self.closed_tickets = getattr(self, "closed_tickets", []) + [ticket]
+        return {"action": "close", "success": True, "ticket": ticket, "message": "Request completed"}
+
     def close(self):
         self.closed = True
 
@@ -243,6 +247,36 @@ def test_shutdown_stops_background_thread(paths):
 
 
 # --------------------------------------------------------------------------- #
+# Dashboard page
+# --------------------------------------------------------------------------- #
+def test_dashboard_served_at_root(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    html = r.text
+    assert "<title>Aurum Dashboard</title>" in html
+    for marker in ("#0D0D0D", "#D4AF37", 'id="toggle-btn"', 'id="creds-form"', 'id="tv-chart"',
+                   'id="trades"', 'id="reports"', "POLL_MS = 3000"):
+        assert marker in html
+    for endpoint in ("/api/status", "/api/positions", "/api/signal", "/api/control",
+                     "/api/credentials", "/api/reports", "/close"):
+        assert endpoint in html
+
+
+def test_status_includes_tradingview_symbol(client):
+    assert client.get("/api/status").json()["trading"]["tv_symbol"] == "OANDA:XAUUSD"
+
+
+def test_close_endpoint_uses_runner(client):
+    assert client.post("/api/positions/5/close").status_code == 503  # not connected yet
+    control(client, "start")
+    assert client.bot.wait_for_status(BotStatus.SCANNING)
+    r = client.post("/api/positions/5/close")
+    assert r.status_code == 200 and r.json()["ticket"] == 5
+    assert FakeRunner.instances[0].closed_tickets == [5]
+
+
+# --------------------------------------------------------------------------- #
 # Auth
 # --------------------------------------------------------------------------- #
 def test_token_protects_control_and_credentials(paths):
@@ -257,6 +291,15 @@ def test_token_protects_control_and_credentials(paths):
         auth = {"Authorization": "Bearer s3cret"}
         assert client.post("/api/control", json={"action": "start"}, headers=auth).status_code == 200
         assert client.get("/api/credentials", headers=auth).status_code == 200
+        assert client.post("/api/positions/1/close").status_code == 401
+        assert client.get("/").status_code == 200  # the page itself loads; it asks for the token
+
+
+@pytest.mark.parametrize("token", ["", "   "])
+def test_blank_token_disables_auth(paths, token):
+    client, _ = make_client(paths, token=token)
+    with client:
+        assert control(client, "start").status_code == 200
 
 
 # --------------------------------------------------------------------------- #
@@ -347,6 +390,41 @@ def test_full_pipeline_through_api(paths, fake_terminal):
         assert any(s["session"] == "Asia" and s["side"] == "low" for s in d["sweeps"]["latest"])
         assert signal["last_result"]["signal"]["entry"] == 2646.5
         json.dumps(signal)  # fully serialisable
+
+
+def test_close_and_cancel_through_api(paths, fake_terminal):
+    def factory(config):
+        return PipelineRunner(
+            config, settings_loader=settings_loader, params=StrategyParameters(server_utc_offset_hours=0),
+            reports_dir=paths.reports, mt5_module=fake_terminal, charts=False,
+        )
+
+    client, state = make_client(paths, runner_factory=factory)
+    with client:
+        control(client, "start", interval_seconds=30)
+        assert state.wait_for_runs(1, timeout=10)
+        fake_terminal.sent.clear()
+        fake_terminal.send_results = [{"retcode": 10009, "deal": 9}, {"retcode": 10009}]
+
+        r = client.post("/api/positions/111/close")
+        assert r.status_code == 200
+        assert r.json()["action"] == "close" and r.json()["success"] is True
+        close_req = fake_terminal.sent[-1]
+        assert (close_req["position"], close_req["type"], close_req["price"]) == (111, FakeMT5.ORDER_TYPE_SELL, BULLISH_BID)
+
+        r = client.post("/api/positions/333/close")
+        assert r.status_code == 200 and r.json()["action"] == "cancel"
+        assert fake_terminal.sent[-1] == {"action": FakeMT5.TRADE_ACTION_REMOVE, "order": 333}
+
+        # someone else's trade and unknown tickets are refused without sending anything
+        sent = len(fake_terminal.sent)
+        assert client.post("/api/positions/222/close").status_code == 404
+        assert client.post("/api/positions/999/close").status_code == 404
+        assert len(fake_terminal.sent) == sent
+
+        fake_terminal.send_results = [{"retcode": 10018}]  # market closed
+        r = client.post("/api/positions/111/close")
+        assert r.status_code == 502 and "MARKET_CLOSED" in r.json()["detail"]
 
 
 def test_full_pipeline_generates_report_listed_by_api(paths, fake_terminal):

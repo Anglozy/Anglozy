@@ -47,6 +47,7 @@ SYMBOL_TRADE_MODE_SHORTONLY = 2
 SYMBOL_TRADE_MODE_CLOSEONLY = 3
 
 MAX_COMMENT_LENGTH = 31  # MT5 truncates/rejects longer comments
+POSITION_TYPE_BUY = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -123,6 +124,10 @@ class InsufficientMarginError(OrderValidationError):
 
 class RiskTooSmallError(OrderValidationError):
     """Even the minimum lot would risk more than the allowed amount."""
+
+
+class TicketNotFoundError(LookupError):
+    """No open position / pending order with that ticket belongs to this bot."""
 
 
 @dataclass
@@ -325,6 +330,63 @@ class MT5Executor:
         orders = self.mt5.orders_get(symbol=symbol) if symbol else self.mt5.orders_get()
         return [o for o in orders or () if o.magic == self.settings.magic_number]
 
+    def close_position(self, ticket: int, comment: str = "aurum close") -> OrderResult:
+        """Close one of this bot's open positions at market.
+
+        Raises :class:`TicketNotFoundError` if the ticket is not an open
+        position carrying this executor's magic number (manual trades are
+        never touched).
+        """
+        position = self._own(self.mt5.positions_get(ticket=ticket), ticket, "position")
+        side: Side = "SELL" if position.type == POSITION_TYPE_BUY else "BUY"
+        spec = self.connector.symbol_spec(position.symbol)
+        tick = self.connector.get_tick(position.symbol)
+        request = {
+            "action": self.mt5.TRADE_ACTION_DEAL,
+            "symbol": position.symbol,
+            "volume": position.volume,
+            "type": self.mt5.ORDER_TYPE_SELL if side == "SELL" else self.mt5.ORDER_TYPE_BUY,
+            "position": ticket,
+            "price": tick.bid if side == "SELL" else tick.ask,
+            "deviation": self.settings.deviation_points,
+            "magic": self.settings.magic_number,
+            "comment": comment[:MAX_COMMENT_LENGTH],
+            "type_time": self.mt5.ORDER_TIME_GTC,
+        }
+        return self._send(request, self._market_filling_modes(spec), side=side)
+
+    def cancel_order(self, ticket: int) -> OrderResult:
+        """Delete one of this bot's pending orders."""
+        self._own(self.mt5.orders_get(ticket=ticket), ticket, "pending order")
+        request = {"action": self.mt5.TRADE_ACTION_REMOVE, "order": ticket}
+        label = f"cancel order {ticket}"
+        logger.info("Sending %s", label)
+        result = self.mt5.order_send(request)
+        if result is None:
+            code, description = self._last_error()
+            message = f"order_send returned no result: [{code}] {description}"
+            logger.error("%s failed: %s", label, message)
+            return OrderResult(False, None, "NO_RESULT", message, order=ticket, request=request)
+        info = describe_retcode(result.retcode)
+        if info.outcome == "success":
+            logger.info("%s %s", label, info.name)
+            return OrderResult(True, result.retcode, info.name, info.description, order=ticket, request=request)
+        comment = f" ({result.comment})" if getattr(result, "comment", "") else ""
+        message = f"{info.name} ({result.retcode}): {info.description}{comment}"
+        logger.error("%s rejected: %s", label, message)
+        return OrderResult(False, result.retcode, info.name, message, order=ticket, request=request)
+
+    def _own(self, items: Any, ticket: int, kind: str) -> Any:
+        item = next(iter(items or ()), None)
+        if item is None:
+            raise TicketNotFoundError(f"No open {kind} #{ticket}")
+        if item.magic != self.settings.magic_number:
+            raise TicketNotFoundError(
+                f"{kind.capitalize()} #{ticket} was not opened by this bot "
+                f"(magic {item.magic}, expected {self.settings.magic_number})"
+            )
+        return item
+
     # ------------------------------------------------------------ internals
     def _send(self, request: dict[str, Any], filling_modes: list[int], side: Side) -> OrderResult:
         """Send ``request``, retrying transient failures, and interpret the retcode."""
@@ -336,7 +398,7 @@ class MT5Executor:
         for attempt in range(1, self.max_retries + 2):
             logger.info(
                 "Sending %s @ %s sl=%s tp=%s magic=%s (attempt %d)",
-                label, request["price"], request["sl"], request["tp"], request["magic"], attempt,
+                label, request["price"], request.get("sl"), request.get("tp"), request["magic"], attempt,
             )
             result = self.mt5.order_send(request)
 

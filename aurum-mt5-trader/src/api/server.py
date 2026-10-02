@@ -7,13 +7,15 @@ Endpoints:
     POST /api/control       {"action": "start|pause|resume|stop|toggle", "dry_run": true, "interval_seconds": 60}
     GET  /api/credentials   MT5 login/server from .env, password masked
     POST /api/credentials   update .env (blank or masked password keeps the stored one)
+    GET  /                  the dashboard (single page, polls the API every 3 s)
     GET  /api/positions     open positions + pending orders for the bot's symbol and magic number
+    POST /api/positions/{ticket}/close   close a bot position / cancel a bot pending order
     GET  /api/signal        last setup result and ICT detector stats
     GET  /api/reports       list generated Aurum reports
     GET  /reports/{name}    serve one report
 
 Security: binds to 127.0.0.1 by default. If ``AURUM_API_TOKEN`` is set, the
-control and credential endpoints require ``Authorization: Bearer <token>``.
+control, credential and close endpoints require ``Authorization: Bearer <token>``.
 Set a token before exposing the server beyond localhost.
 """
 
@@ -34,9 +36,10 @@ if __name__ == "__main__":  # allow `python src/api/server.py`
     sys.path[:0] = [str(_root / "src"), str(_root)]
 
 from fastapi import Depends, FastAPI, Header, HTTPException  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
+from aurum.capturer import tradingview_symbol  # noqa: E402
 from api.state import (  # noqa: E402
     DEFAULT_ENV_PATH,
     DEFAULT_REPORTS_DIR,
@@ -46,9 +49,11 @@ from api.state import (  # noqa: E402
     StateError,
 )
 from config.settings import Settings, load_settings  # noqa: E402
+from mt5.executor import TicketNotFoundError  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+DASHBOARD_HTML = Path(__file__).resolve().parent / "templates" / "dashboard.html"
 REPORT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*\.html$")
 
 
@@ -76,7 +81,7 @@ def create_app(
     state = state or BotStateManager()
     credentials = credentials or CredentialStore(DEFAULT_ENV_PATH)
     reports_dir = Path(reports_dir)
-    token = api_token if api_token is not None else os.getenv("AURUM_API_TOKEN") or None
+    token = (api_token if api_token is not None else os.getenv("AURUM_API_TOKEN", "")).strip() or None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -95,11 +100,18 @@ def create_app(
 
     def trading_info() -> dict[str, Any]:
         try:
-            t = settings_loader().trading
+            settings = settings_loader()
+            t = settings.trading
             return {"symbol": t.symbol, "magic_number": t.magic_number, "risk_percent": t.risk_percent,
-                    "allow_live_trading": t.allow_live_trading}
+                    "allow_live_trading": t.allow_live_trading,
+                    "tv_symbol": tradingview_symbol(t.symbol, settings.charts.exchange)}
         except ValueError as exc:  # malformed .env
             return {"settings_error": str(exc)}
+
+    # ------------------------------------------------------------ dashboard
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    def dashboard() -> HTMLResponse:
+        return HTMLResponse(DASHBOARD_HTML.read_text(encoding="utf-8"))
 
     # ------------------------------------------------------------ status / control
     @app.get("/api/status")
@@ -144,6 +156,18 @@ def create_app(
             return state.positions()
         except NotConnectedError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/positions/{ticket}/close", dependencies=[Depends(require_token)])
+    def close_ticket(ticket: int) -> dict[str, Any]:
+        try:
+            result = state.close_ticket(ticket)
+        except NotConnectedError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except TicketNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not result["success"]:
+            raise HTTPException(status_code=502, detail=f"Broker rejected the request: {result['message']}")
+        return result
 
     @app.get("/api/signal")
     def get_signal() -> dict[str, Any]:

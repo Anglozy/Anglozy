@@ -20,6 +20,7 @@ class FakeMT5:
     ORDER_TYPE_SELL_LIMIT = 3
     TRADE_ACTION_DEAL = 1
     TRADE_ACTION_PENDING = 5
+    TRADE_ACTION_REMOVE = 8
     ORDER_FILLING_FOK = 0
     ORDER_FILLING_IOC = 1
     ORDER_FILLING_RETURN = 2
@@ -110,12 +111,14 @@ class FakeMT5:
             return None
         return SimpleNamespace(
             order=result.get("order", 0), deal=result.get("deal", 0),
-            volume=request["volume"], price=request["price"], comment=result.get("comment", ""),
+            volume=request.get("volume", 0.0), price=request.get("price", 0.0), comment=result.get("comment", ""),
             retcode=result["retcode"],
         )
 
-    def positions_get(self, symbol=None):
-        return tuple(p for p in self.positions if symbol is None or p.symbol == symbol)
+    def positions_get(self, symbol=None, ticket=None):
+        return tuple(p for p in self.positions
+                     if (symbol is None or p.symbol == symbol) and (ticket is None or p.ticket == ticket))
 
-    def orders_get(self, symbol=None):
-        return tuple(o for o in self.orders if symbol is None or o.symbol == symbol)
+    def orders_get(self, symbol=None, ticket=None):
+        return tuple(o for o in self.orders
+                     if (symbol is None or o.symbol == symbol) and (ticket is None or o.ticket == ticket))

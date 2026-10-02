@@ -236,3 +236,55 @@ def test_positions_and_orders_filtered_by_magic(executor, fake):
 
     assert [p.ticket for p in executor.open_positions("XAUUSD")] == [1]
     assert [o.ticket for o in executor.pending_orders()] == [3]
+
+
+# ---------------------------------------------------------------- closing / cancelling
+def _position(ticket, type_, magic=MAGIC):
+    return SimpleNamespace(ticket=ticket, type=type_, magic=magic, symbol="XAUUSD", volume=0.3)
+
+
+def test_close_buy_position_sells_at_bid(executor, fake):
+    fake.positions = [_position(10, 0)]
+    fake.send_results = [{"retcode": 10009, "deal": 77}]
+
+    result = executor.close_position(10)
+
+    assert result.success and result.deal == 77
+    [req] = fake.sent
+    assert req["action"] == FakeMT5.TRADE_ACTION_DEAL
+    assert req["type"] == FakeMT5.ORDER_TYPE_SELL
+    assert (req["position"], req["volume"], req["price"]) == (10, 0.3, 2650.00)
+    assert req["magic"] == MAGIC and "sl" not in req
+
+
+def test_close_sell_position_buys_at_ask(executor, fake):
+    fake.positions = [_position(11, 1)]
+    fake.send_results = [{"retcode": 10009}]
+    executor.close_position(11)
+    assert fake.sent[0]["type"] == FakeMT5.ORDER_TYPE_BUY
+    assert fake.sent[0]["price"] == 2650.30
+
+
+def test_close_refuses_other_magic_and_unknown_tickets(executor, fake):
+    from mt5.executor import TicketNotFoundError
+    fake.positions = [_position(12, 0, magic=999)]
+    with pytest.raises(TicketNotFoundError, match="not opened by this bot"):
+        executor.close_position(12)
+    with pytest.raises(TicketNotFoundError, match="No open position #404"):
+        executor.close_position(404)
+    assert fake.sent == []
+
+
+def test_cancel_pending_order(executor, fake):
+    fake.orders = [SimpleNamespace(ticket=20, magic=MAGIC, symbol="XAUUSD")]
+    fake.send_results = [{"retcode": 10009}]
+    result = executor.cancel_order(20)
+    assert result.success and result.retcode_name == "TRADE_RETCODE_DONE"
+    assert fake.sent == [{"action": FakeMT5.TRADE_ACTION_REMOVE, "order": 20}]
+
+
+def test_cancel_rejected_by_broker(executor, fake):
+    fake.orders = [SimpleNamespace(ticket=21, magic=MAGIC, symbol="XAUUSD")]
+    fake.send_results = [{"retcode": 10029, "comment": "frozen"}]
+    result = executor.cancel_order(21)
+    assert not result.success and "FROZEN" in result.message and "frozen" in result.message

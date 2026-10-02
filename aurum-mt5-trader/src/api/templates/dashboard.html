@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aurum Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230D0D0D'/%3E%3Cpath d='M8 3l4 10H4z' fill='%23D4AF37'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #0D0D0D;
+  --gold: #D4AF37;
+  --gold-soft: rgba(212, 175, 55, 0.12);
+  --gold-line: rgba(212, 175, 55, 0.22);
+  --glass: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
+  --glass-border: rgba(255, 255, 255, 0.07);
+  --text: #ECEAE4;
+  --muted: #8E939B;
+  --faint: #5B6068;
+  --bull: #3FB68B;
+  --bear: #E5534B;
+  --amber: #F0B429;
+  --radius: 14px;
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --sans: "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 600px at 85% -10%, rgba(212,175,55,0.08), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(212,175,55,0.05), transparent 60%),
+    var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select { font: inherit; color: inherit; }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+.up { color: var(--bull); }
+.down { color: var(--bear); }
+
+/* ---------- header ---------- */
+header {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px;
+  padding: 14px 24px;
+  background: rgba(13,13,13,0.78);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--gold-line);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; margin-right: auto; }
+.brand b { font-size: 18px; letter-spacing: 0.32em; color: var(--gold); font-weight: 600; }
+.brand span { font-size: 12px; color: var(--muted); letter-spacing: 0.12em; text-transform: uppercase; }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--glass-border); background: rgba(255,255,255,0.03);
+  font-size: 12px; color: var(--muted); white-space: nowrap;
+}
+.chip strong { color: var(--text); font-weight: 600; }
+.pill { font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.scanning { color: var(--bull); border-color: rgba(63,182,139,0.35); }
+.pill.scanning::before { box-shadow: 0 0 0 0 rgba(63,182,139,0.6); animation: pulse 1.8s infinite; }
+.pill.paused { color: var(--amber); border-color: rgba(240,180,41,0.35); }
+.pill.starting, .pill.stopping { color: var(--gold); border-color: var(--gold-line); }
+.pill.stopped { color: var(--muted); }
+.pill.error { color: var(--bear); border-color: rgba(229,83,75,0.4); }
+.pill.offline { color: var(--bear); }
+@keyframes pulse { 70% { box-shadow: 0 0 0 7px rgba(63,182,139,0); } 100% { box-shadow: 0 0 0 0 rgba(63,182,139,0); } }
+.mode.live { color: var(--bear); border-color: rgba(229,83,75,0.4); }
+.mode.dry { color: var(--gold); border-color: var(--gold-line); }
+.controls { display: flex; align-items: center; gap: 8px; }
+select.small {
+  background: rgba(255,255,255,0.04); border: 1px solid var(--glass-border);
+  border-radius: 8px; padding: 6px 8px; font-size: 12px;
+}
+select.small:disabled { opacity: 0.5; }
+.btn {
+  border: 1px solid var(--glass-border); background: rgba(255,255,255,0.04);
+  border-radius: 9px; padding: 8px 14px; cursor: pointer;
+  font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  transition: border-color .15s, background .15s, transform .05s;
+}
+.btn:hover { border-color: var(--gold-line); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.primary { background: var(--gold); border-color: var(--gold); color: #141109; min-width: 104px; }
+.btn.primary:hover { background: #e2bf4c; }
+.btn.danger { color: var(--bear); border-color: rgba(229,83,75,0.35); }
+.btn.danger:hover { background: rgba(229,83,75,0.08); }
+.btn.ghost { padding: 6px 10px; font-size: 11px; }
+
+/* ---------- layout ---------- */
+main {
+  display: grid; gap: 18px; padding: 22px 24px 40px;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 1.7fr) minmax(280px, 1.1fr);
+  max-width: 1680px; margin: 0 auto;
+}
+.col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+@media (max-width: 1180px) {
+  main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .col.chart { grid-column: 1 / -1; order: -1; }
+}
+@media (max-width: 760px) {
+  main { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+  header { padding: 12px 16px; }
+}
+
+/* ---------- cards ---------- */
+.card {
+  background: var(--glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 20px 40px -24px rgba(0,0,0,0.8);
+  min-width: 0;
+}
+.card.accent { border-color: var(--gold-line); }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.card-title {
+  display: flex; align-items: center; gap: 10px; margin: 0;
+  font-size: 12px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted);
+}
+.card-title::before { content: ""; width: 16px; height: 2px; background: var(--gold); }
+.big { font-family: var(--mono); font-size: 26px; font-weight: 600; margin: 0; }
+.kv { list-style: none; margin: 0; padding: 0; }
+.kv li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.05); }
+.kv li:first-child { border-top: 0; }
+.kv .k { color: var(--muted); }
+.kv .v { font-family: var(--mono); text-align: right; overflow-wrap: anywhere; }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0 14px; }
+.metric { padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.05); }
+.metric .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+.metric .value { font-family: var(--mono); font-size: 18px; font-weight: 600; margin-top: 4px; overflow-wrap: anywhere; }
+.metric .value.gold { color: var(--gold); }
+.metric .value small { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.note { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
+.note.err { color: var(--bear); }
+.empty { color: var(--faint); font-size: 13px; padding: 14px 0 4px; text-align: center; }
+
+/* ---------- chart ---------- */
+.chart-frame {
+  position: relative; width: 100%; aspect-ratio: 16 / 10; min-height: 340px;
+  border-radius: 10px; overflow: hidden; background: #111;
+  border: 1px solid rgba(255,255,255,0.05);
+}
+.chart-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+/* ---------- signals ---------- */
+.sig-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.sig { padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.05); min-width: 0; }
+.sig .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+.sig .value { margin-top: 6px; font-weight: 600; }
+.sig .sub { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.badge {
+  display: inline-block; padding: 2px 9px; border-radius: 999px; border: 1px solid currentColor;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.badge.bullish, .badge.buy { color: var(--bull); }
+.badge.bearish, .badge.sell { color: var(--bear); }
+.badge.neutral { color: var(--muted); }
+.entry-box { margin-top: 14px; padding: 14px; border-radius: 10px; border: 1px dashed var(--gold-line); background: var(--gold-soft); }
+.entry-box .row { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 8px; font-family: var(--mono); font-size: 13px; }
+.entry-box .row span b { color: var(--muted); font-weight: 500; font-family: var(--sans); margin-right: 6px; }
+
+/* ---------- trades ---------- */
+.trade { padding: 12px 14px; border-radius: 10px; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); margin-top: 10px; }
+.trade:first-of-type { margin-top: 0; }
+.trade-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.trade-head .title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.trade-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 14px; margin-top: 10px; font-size: 13px; }
+.trade-grid span { display: flex; justify-content: space-between; gap: 8px; }
+.trade-grid b { color: var(--muted); font-weight: 500; }
+.trade-grid i { font-style: normal; font-family: var(--mono); }
+.pnl { font-family: var(--mono); font-weight: 600; }
+
+/* ---------- reports ---------- */
+.reports { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.reports li + li { margin-top: 6px; }
+.report {
+  width: 100%; display: flex; align-items: center; gap: 10px; text-align: left;
+  padding: 10px 12px; border-radius: 10px; cursor: pointer;
+  background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.05);
+  transition: border-color .15s, background .15s;
+}
+.report:hover { border-color: var(--gold-line); background: var(--gold-soft); }
+.report .name { flex: 1; min-width: 0; }
+.report .name div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report .when { font-size: 12px; color: var(--muted); }
+.report .arrow { color: var(--gold); }
+
+/* ---------- modal & toast ---------- */
+.overlay {
+  position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+}
+.overlay.open { display: flex; }
+.modal {
+  width: 100%; max-width: 440px; max-height: 92vh; overflow: auto;
+  background: linear-gradient(180deg, #1a1a1a, #121212);
+  border: 1px solid var(--gold-line); border-radius: 16px; padding: 22px;
+}
+.modal.wide { max-width: 1100px; height: 90vh; display: flex; flex-direction: column; padding: 14px; }
+.modal h2 { margin: 0 0 4px; font-size: 18px; }
+.modal p.lead { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.field input {
+  width: 100%; padding: 10px 12px; border-radius: 9px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--glass-border); font-family: var(--mono);
+}
+.field input:focus { outline: none; border-color: var(--gold); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.viewer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 4px 12px; }
+.viewer-head .title { font-family: var(--mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-head a { color: var(--gold); font-size: 12px; text-decoration: none; margin-right: 8px; }
+.viewer { flex: 1; width: 100%; border: 0; border-radius: 10px; background: #0B0D10; }
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
+.toast {
+  padding: 11px 14px; border-radius: 10px; font-size: 13px;
+  background: #1b1b1b; border: 1px solid var(--glass-border); border-left: 3px solid var(--gold);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5); animation: rise .2s ease-out;
+}
+.toast.err { border-left-color: var(--bear); }
+.toast.ok { border-left-color: var(--bull); }
+@keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+.conn { font-size: 11px; color: var(--faint); }
+.conn.bad { color: var(--bear); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><b>AURUM</b><span>MT5 Trader</span></div>
+  <div class="meta">
+    <span class="chip pill stopped" id="status-pill">Stopped</span>
+    <span class="chip mode dry" id="mode-chip">Dry run</span>
+    <span class="chip">Symbol <strong id="symbol">—</strong></span>
+    <span class="chip">Risk <strong id="risk">—</strong></span>
+    <span class="conn" id="conn">Connecting…</span>
+  </div>
+  <div class="controls">
+    <select class="small" id="mode-select" aria-label="Trading mode">
+      <option value="dry">Dry run</option>
+      <option value="live">Live orders</option>
+    </select>
+    <select class="small" id="interval-select" aria-label="Scan interval">
+      <option value="30">30s</option>
+      <option value="60" selected>60s</option>
+      <option value="120">2m</option>
+      <option value="300">5m</option>
+    </select>
+    <button class="btn primary" id="toggle-btn">Start</button>
+    <button class="btn danger" id="stop-btn" hidden>Stop</button>
+  </div>
+</header>
+
+<main>
+  <!-- Column 1: account & strategy -->
+  <section class="col">
+    <div class="card accent">
+      <div class="card-head">
+        <h2 class="card-title">Account</h2>
+        <button class="btn ghost" id="edit-creds-btn">Edit credentials</button>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="label">Balance</div><div class="value" id="balance">—</div></div>
+        <div class="metric"><div class="label">Equity</div><div class="value gold" id="equity">—</div></div>
+      </div>
+      <ul class="kv">
+        <li><span class="k">Login</span><span class="v" id="login">—</span></li>
+        <li><span class="k">Server</span><span class="v" id="server">—</span></li>
+        <li><span class="k">Account type</span><span class="v" id="trade-mode">—</span></li>
+        <li><span class="k">Floating P&amp;L</span><span class="v" id="floating">—</span></li>
+        <li><span class="k">Free margin</span><span class="v" id="margin">—</span></li>
+        <li><span class="k">Leverage</span><span class="v" id="leverage">—</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2 class="card-title">Strategy</h2></div>
+      <ul class="kv">
+        <li><span class="k">Model</span><span class="v">ICT Sweep · FVG · OB</span></li>
+        <li><span class="k">Magic number</span><span class="v" id="magic">—</span></li>
+        <li><span class="k">Scan interval</span><span class="v" id="interval">—</span></li>
+        <li><span class="k">Passes run</span><span class="v" id="runs">0</span></li>
+        <li><span class="k">Last pass</span><span class="v" id="last-run">—</span></li>
+        <li><span class="k">Last outcome</span><span class="v" id="last-outcome">—</span></li>
+      </ul>
+      <p class="note" id="last-message"></p>
+      <p class="note err" id="last-error" hidden></p>
+    </div>
+  </section>
+
+  <!-- Column 2: chart & signals -->
+  <section class="col chart">
+    <div class="card">
+      <div class="card-head">
+        <h2 class="card-title">Market · <span id="chart-label">XAUUSD M15</span></h2>
+      </div>
+      <div class="chart-frame"><iframe id="tv-chart" title="TradingView chart" loading="lazy"></iframe></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 class="card-title">Signal Detector</h2>
+        <span class="muted" id="signal-time" style="font-size:12px"></span>
+      </div>
+      <div class="sig-grid">
+        <div class="sig"><div class="label" id="htf-label">H4 Bias</div><div class="value" id="htf-bias"><span class="badge neutral">—</span></div><div class="sub" id="htf-break"></div></div>
+        <div class="sig"><div class="label">Asia sweep</div><div class="value" id="sweep-asia">—</div><div class="sub" id="sweep-asia-sub"></div></div>
+        <div class="sig"><div class="label">London sweep</div><div class="value" id="sweep-london">—</div><div class="sub" id="sweep-london-sub"></div></div>
+        <div class="sig"><div class="label">Active FVGs</div><div class="value" id="fvg-count">—</div><div class="sub" id="fvg-latest"></div></div>
+        <div class="sig"><div class="label">Order blocks</div><div class="value" id="ob-count">—</div><div class="sub" id="ob-latest"></div></div>
+        <div class="sig"><div class="label" id="ltf-label">M15 structure</div><div class="value" id="ltf-break">—</div><div class="sub" id="ltf-break-sub"></div></div>
+      </div>
+      <div class="entry-box" id="entry-box" hidden>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <strong style="color:var(--gold);letter-spacing:.1em;font-size:12px;text-transform:uppercase">Pending entry</strong>
+          <span id="entry-dir"></span>
+          <span class="muted" id="entry-status" style="font-size:12px"></span>
+        </div>
+        <div class="row" id="entry-levels"></div>
+      </div>
+      <p class="note" id="signal-note">Start the bot to run the detectors.</p>
+    </div>
+  </section>
+
+  <!-- Column 3: trades & reports -->
+  <section class="col">
+    <div class="card accent">
+      <div class="card-head">
+        <h2 class="card-title">Active Trades</h2>
+        <span class="muted" id="trades-count" style="font-size:12px"></span>
+      </div>
+      <div id="trades"><div class="empty">Bot offline. Start it to load live trades.</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 class="card-title">Aurum Report Vault</h2>
+        <span class="muted" id="reports-count" style="font-size:12px"></span>
+      </div>
+      <ul class="reports" id="reports"><li class="empty">No reports yet.</li></ul>
+    </div>
+  </section>
+</main>
+
+<!-- Credentials modal -->
+<div class="overlay" id="creds-overlay" role="dialog" aria-modal="true" aria-labelledby="creds-title">
+  <form class="modal" id="creds-form" autocomplete="off">
+    <h2 id="creds-title">MT5 Credentials</h2>
+    <p class="lead">Saved to <span class="mono" id="env-path">.env</span> on this machine. The password is never shown again.</p>
+    <div class="field"><label for="f-login">Login (account number)</label><input id="f-login" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 35068828"></div>
+    <div class="field"><label for="f-server">Server</label><input id="f-server" placeholder="e.g. FundedNext-Server 3"></div>
+    <div class="field"><label for="f-password">Password</label><input id="f-password" type="password" autocomplete="new-password" placeholder="Enter password"></div>
+    <div class="field"><label for="f-path">Terminal path (optional)</label><input id="f-path" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe"></div>
+    <p class="note err" id="creds-error" hidden></p>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn primary" id="creds-save">Save</button>
+    </div>
+  </form>
+</div>
+
+<!-- Report viewer -->
+<div class="overlay" id="viewer-overlay" role="dialog" aria-modal="true" aria-label="Report viewer">
+  <div class="modal wide">
+    <div class="viewer-head">
+      <span class="title" id="viewer-title"></span>
+      <span><a id="viewer-open" target="_blank" rel="noopener">Open in new tab ↗</a><button class="btn ghost" data-close>Close</button></span>
+    </div>
+    <iframe class="viewer" id="viewer-frame" title="Aurum report"></iframe>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  const POLL_MS = 3000;
+  const REPORTS_MS = 15000;
+  const $ = (id) => document.getElementById(id);
+  const state = { status: null, tvSymbol: null, runs: -1, polling: false, lastOk: 0 };
+
+  // ------------------------------------------------------------ helpers
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const num = (v, d = 2) => (v === null || v === undefined || isNaN(v)) ? "—"
+    : Number(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  const money = (v, cur) => v === null || v === undefined ? "—" : `${num(v)} ${cur || ""}`.trim();
+  const signed = (v) => v === null || v === undefined ? "—" : (v > 0 ? "+" : "") + num(v);
+  const cls = (v) => v > 0 ? "up" : v < 0 ? "down" : "";
+  const time = (iso) => iso ? new Date(iso).toISOString().slice(11, 16) + " UTC" : "—";
+  function ago(iso) {
+    if (!iso) return "—";
+    const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+  }
+  function setText(id, value, className) {
+    const el = $(id);
+    el.textContent = value;
+    if (className !== undefined) el.className = el.className.split(" ").filter((c) => !["up", "down"].includes(c)).concat(className ? [className] : []).join(" ");
+  }
+  function toast(message, kind = "") {
+    const el = document.createElement("div");
+    el.className = `toast ${kind}`;
+    el.textContent = message;
+    $("toasts").appendChild(el);
+    setTimeout(() => el.remove(), kind === "err" ? 7000 : 4000);
+  }
+
+  // Optional API token (only needed if AURUM_API_TOKEN is set on the server)
+  function getToken() { try { return localStorage.getItem("aurum.token") || ""; } catch { return ""; } }
+  function setToken(t) { try { localStorage.setItem("aurum.token", t); } catch { /* storage unavailable */ } }
+
+  async function api(path, options = {}, retried = false) {
+    const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+    const token = getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(path, { ...options, headers });
+    if (res.status === 401 && !retried) {
+      const t = window.prompt("This dashboard is protected. Enter the AURUM_API_TOKEN:");
+      if (t) { setToken(t.trim()); return api(path, options, true); }
+    }
+    let body = null;
+    try { body = await res.json(); } catch { /* non-JSON */ }
+    if (!res.ok) {
+      const d = body && body.detail;
+      const msg = Array.isArray(d) ? d.map((e) => `${(e.loc || []).slice(-1)[0]}: ${e.msg}`).join("; ") : (d || `HTTP ${res.status}`);
+      const err = new Error(msg); err.status = res.status; throw err;
+    }
+    return body;
+  }
+
+  // ------------------------------------------------------------ status
+  function renderStatus(s) {
+    state.status = s;
+    const st = s.status;
+    const pill = $("status-pill");
+    pill.className = `chip pill ${st}`;
+    pill.textContent = { scanning: "Online", paused: "Paused", starting: "Starting", stopping: "Stopping", stopped: "Stopped", error: "Error" }[st] || st;
+
+    const running = ["scanning", "paused", "starting", "stopping"].includes(st);
+    const live = running ? !s.dry_run : $("mode-select").value === "live";
+    const mode = $("mode-chip");
+    mode.className = `chip mode ${live ? "live" : "dry"}`;
+    mode.textContent = live ? "Live orders" : "Dry run";
+    $("mode-select").disabled = running;
+    $("interval-select").disabled = running;
+
+    const btn = $("toggle-btn");
+    btn.textContent = { scanning: "Pause", paused: "Resume" }[st] || (running ? "…" : "Start");
+    btn.disabled = st === "starting" || st === "stopping";
+    $("stop-btn").hidden = !running;
+
+    const t = s.trading || {};
+    setText("symbol", t.symbol || "—");
+    setText("risk", t.risk_percent !== undefined ? `${num(t.risk_percent, 1)}%` : "—");
+    setText("magic", t.magic_number ?? "—");
+    setText("interval", `${num(s.interval_seconds, 0)}s`);
+    setText("runs", s.runs);
+    setText("last-run", s.last_run_at ? `${time(s.last_run_at)} · ${ago(s.last_run_at)}` : "—");
+    const r = s.last_result;
+    setText("last-outcome", r ? r.status.replace("_", " ").toUpperCase() : "—");
+    setText("last-message", r ? r.message : "");
+    $("last-error").hidden = !s.last_error;
+    $("last-error").textContent = s.last_error || "";
+
+    const a = s.account;
+    if (a) {
+      setText("login", a.login); setText("server", a.server);
+      $("balance").innerHTML = `${esc(num(a.balance))}<small>${esc(a.currency)}</small>`;
+      $("equity").innerHTML = `${esc(num(a.equity))}<small>${esc(a.currency)}</small>`;
+      setText("floating", signed(a.floating_pnl), cls(a.floating_pnl));
+      setText("margin", money(a.margin_free, a.currency));
+      setText("leverage", a.leverage ? `1:${a.leverage}` : "—");
+      setText("trade-mode", a.trade_mode || "—");
+    }
+
+    if (t.tv_symbol && t.tv_symbol !== state.tvSymbol) {
+      state.tvSymbol = t.tv_symbol;
+      const q = new URLSearchParams({
+        symbol: t.tv_symbol, interval: "15", theme: "dark", style: "1", timezone: "Etc/UTC",
+        hidesidetoolbar: "1", symboledit: "0", saveimage: "0", toolbarbg: "0D0D0D",
+        withdateranges: "0", hideideas: "1", locale: "en",
+      });
+      $("tv-chart").src = `https://s.tradingview.com/widgetembed/?${q}`;
+      setText("chart-label", `${t.tv_symbol} · M15`);
+    }
+
+    if (s.runs !== state.runs) { state.runs = s.runs; loadReports(); }
+  }
+
+  async function onToggle() {
+    const s = state.status;
+    if (!s) return;
+    const body = { action: "toggle" };
+    if (s.status === "stopped" || s.status === "error") {
+      body.action = "start";
+      body.dry_run = $("mode-select").value !== "live";
+      body.interval_seconds = Number($("interval-select").value);
+      if (!body.dry_run) {
+        const acct = s.account ? `account ${s.account.login}` : "the configured MT5 account";
+        if (!confirm(`Start in LIVE mode?\n\nThe bot will place real orders on ${acct} at ${num(s.trading?.risk_percent, 1)}% risk per trade.`)) return;
+      }
+    }
+    $("toggle-btn").disabled = true;
+    try {
+      renderStatus({ ...s, ...(await api("/api/control", { method: "POST", body: JSON.stringify(body) })) });
+    } catch (e) { toast(e.message, "err"); }
+    poll();
+  }
+
+  async function onStop() {
+    if (!confirm("Stop the bot and disconnect from MT5? Open trades stay open.")) return;
+    try { await api("/api/control", { method: "POST", body: JSON.stringify({ action: "stop" }) }); toast("Bot stopped"); }
+    catch (e) { toast(e.message, "err"); }
+    poll();
+  }
+
+  // ------------------------------------------------------------ signals
+  function sweepFor(d, session) {
+    const sweeps = (d.sweeps && d.sweeps.latest) || [];
+    for (let i = sweeps.length - 1; i >= 0; i--) if (sweeps[i].session === session) return sweeps[i];
+    return null;
+  }
+
+  function renderSignal(sig) {
+    const d = sig.detectors;
+    $("signal-note").hidden = !!d;
+    setText("signal-time", sig.last_run_at ? `Updated ${ago(sig.last_run_at)}` : "");
+    if (d) {
+      $("htf-label").textContent = `${d.htf_timeframe} Bias`;
+      $("ltf-label").textContent = `${d.ltf_timeframe} Structure`;
+      const bias = (d.htf_bias || "Neutral").toLowerCase();
+      $("htf-bias").innerHTML = `<span class="badge ${esc(bias)}">${esc(d.htf_bias)}</span>`;
+      const hb = d.htf_last_break;
+      setText("htf-break", hb ? `${hb.kind} ${hb.direction === "bullish" ? "above" : "below"} ${num(hb.level)}` : "No break yet");
+
+      for (const session of ["Asia", "London"]) {
+        const key = session.toLowerCase();
+        const s = sweepFor(d, session);
+        $(`sweep-${key}`).innerHTML = s
+          ? `<span class="badge ${esc(s.direction)}">${esc(s.side)} swept</span>`
+          : `<span class="muted">Not swept</span>`;
+        setText(`sweep-${key}-sub`, s ? `${num(s.level)} → ${num(s.extreme)} · ${time(s.time)}` : "Range intact");
+      }
+
+      const fu = d.fvgs.unfilled;
+      $("fvg-count").innerHTML = `<span class="up">${fu.bullish}</span> <span class="muted">/</span> <span class="down">${fu.bearish}</span>`;
+      const fl = d.fvgs.latest.slice(-1)[0];
+      setText("fvg-latest", fl ? `${fl.direction} ${num(fl.low)}–${num(fl.high)}` : "None unfilled");
+      const ou = d.order_blocks.unmitigated;
+      $("ob-count").innerHTML = `<span class="up">${ou.bullish}</span> <span class="muted">/</span> <span class="down">${ou.bearish}</span>`;
+      const ol = d.order_blocks.latest.slice(-1)[0];
+      setText("ob-latest", ol ? `${ol.direction} ${num(ol.low)}–${num(ol.high)}` : "None unmitigated");
+      const lb = d.ltf_last_break;
+      $("ltf-break").innerHTML = lb ? `<span class="badge ${esc(lb.direction)}">${esc(lb.kind)}</span>` : `<span class="muted">—</span>`;
+      setText("ltf-break-sub", lb ? `${lb.direction === "bullish" ? "above" : "below"} ${num(lb.level)} · ${time(lb.time)}` : "");
+    }
+
+    const r = sig.last_result;
+    const box = $("entry-box");
+    if (r && r.signal) {
+      const s = r.signal;
+      box.hidden = false;
+      $("entry-dir").innerHTML = `<span class="badge ${esc(s.direction.toLowerCase())}">${esc(s.direction)} limit</span>`;
+      setText("entry-status", `${r.status.replace("_", " ")}${r.lot_size ? ` · ${num(r.lot_size)} lots` : ""}`);
+      const tps = s.targets.map((t, i) => `<span><b>TP${i + 1}</b>${num(t.price)} <span class="muted">(${num(t.rr)}R)</span></span>`).join("");
+      $("entry-levels").innerHTML = `<span><b>Entry</b>${num(s.entry)}</span><span><b>SL</b><span class="down">${num(s.stop_loss)}</span></span>${tps}`;
+    } else {
+      box.hidden = true;
+    }
+  }
+
+  // ------------------------------------------------------------ trades
+  function renderTrades(data, offline) {
+    const root = $("trades");
+    if (offline) {
+      root.innerHTML = `<div class="empty">Bot offline. Start it to load live trades.</div>`;
+      setText("trades-count", "");
+      return;
+    }
+    const items = [];
+    for (const p of data.positions) {
+      items.push(`
+        <div class="trade">
+          <div class="trade-head">
+            <span class="title"><span class="badge ${p.type === "BUY" ? "buy" : "sell"}">${esc(p.type)}</span>${num(p.volume)} lots <span class="muted mono">#${esc(p.ticket)}</span></span>
+            <button class="btn ghost danger" data-close-ticket="${esc(p.ticket)}" data-kind="position">Close</button>
+          </div>
+          <div class="trade-grid">
+            <span><b>Entry</b><i>${num(p.price_open)}</i></span>
+            <span><b>Current</b><i>${num(p.price_current)}</i></span>
+            <span><b>SL</b><i class="down">${p.sl ? num(p.sl) : "—"}</i></span>
+            <span><b>TP</b><i class="up">${p.tp ? num(p.tp) : "—"}</i></span>
+            <span style="grid-column:1/-1"><b>P&amp;L</b><i class="pnl ${cls(p.profit)}">${signed(p.profit)}</i></span>
+          </div>
+        </div>`);
+    }
+    for (const o of data.orders) {
+      const buy = o.type.startsWith("BUY");
+      items.push(`
+        <div class="trade">
+          <div class="trade-head">
+            <span class="title"><span class="badge ${buy ? "buy" : "sell"}">${esc(o.type.replace("_", " "))}</span>${num(o.volume)} lots <span class="muted mono">#${esc(o.ticket)}</span></span>
+            <button class="btn ghost danger" data-close-ticket="${esc(o.ticket)}" data-kind="order">Cancel</button>
+          </div>
+          <div class="trade-grid">
+            <span><b>Entry</b><i>${num(o.price_open)}</i></span>
+            <span><b>Status</b><i class="muted">Pending</i></span>
+            <span><b>SL</b><i class="down">${o.sl ? num(o.sl) : "—"}</i></span>
+            <span><b>TP</b><i class="up">${o.tp ? num(o.tp) : "—"}</i></span>
+          </div>
+        </div>`);
+    }
+    root.innerHTML = items.length ? items.join("") : `<div class="empty">No open positions or pending orders for magic ${esc(data.magic)}.</div>`;
+    setText("trades-count", items.length ? `${data.positions.length} open · ${data.orders.length} pending` : "");
+  }
+
+  async function onCloseTicket(btn) {
+    const ticket = btn.dataset.closeTicket;
+    const verb = btn.dataset.kind === "order" ? "Cancel pending order" : "Close position";
+    if (!confirm(`${verb} #${ticket} at market?`)) return;
+    btn.disabled = true;
+    try {
+      const r = await api(`/api/positions/${encodeURIComponent(ticket)}/close`, { method: "POST" });
+      toast(`${r.action === "cancel" ? "Order cancelled" : "Position closed"} (#${ticket})`, "ok");
+    } catch (e) { toast(e.message, "err"); btn.disabled = false; }
+    poll();
+  }
+
+  // ------------------------------------------------------------ reports
+  async function loadReports() {
+    let data;
+    try { data = await api("/api/reports"); } catch { return; }
+    const list = $("reports");
+    setText("reports-count", data.reports.length ? `${data.reports.length} saved` : "");
+    if (!data.reports.length) { list.innerHTML = `<li class="empty">No reports yet. They appear here after each setup.</li>`; return; }
+    list.innerHTML = data.reports.map((r) => {
+      const m = r.name.match(/^aurum_([A-Za-z0-9]+)_(BUY|SELL)_(\d{8})_(\d{6})\.html$/);
+      const title = m ? `${m[1]} ${m[2]}` : r.name;
+      const dir = m ? `<span class="badge ${m[2].toLowerCase()}">${m[2]}</span>` : "";
+      return `<li><button class="report" data-report="${esc(r.url)}" data-name="${esc(r.name)}">
+          ${dir}<span class="name"><div>${esc(title)}</div><div class="when">${esc(new Date(r.modified).toLocaleString())}</div></span>
+          <span class="arrow">→</span></button></li>`;
+    }).join("");
+  }
+
+  function openReport(url, name) {
+    $("viewer-title").textContent = name;
+    $("viewer-open").href = url;
+    $("viewer-frame").src = url;
+    openOverlay("viewer-overlay");
+  }
+
+  // ------------------------------------------------------------ credentials
+  async function openCredentials() {
+    $("creds-error").hidden = true;
+    $("creds-form").reset();
+    try {
+      const c = await api("/api/credentials");
+      $("f-login").value = c.login ?? "";
+      $("f-server").value = c.server ?? "";
+      $("f-path").value = c.path ?? "";
+      $("f-password").placeholder = c.password_set ? "•••••••• (leave blank to keep current)" : "Enter password";
+      $("env-path").textContent = c.env_file;
+    } catch (e) { toast(e.message, "err"); return; }
+    openOverlay("creds-overlay");
+    $("f-login").focus();
+  }
+
+  async function saveCredentials(ev) {
+    ev.preventDefault();
+    const login = $("f-login").value.trim();
+    if (login && !/^\d+$/.test(login)) { showCredsError("Login must be your numeric MT5 account number."); return; }
+    const body = {
+      login: login ? Number(login) : null,
+      server: $("f-server").value.trim() || null,
+      password: $("f-password").value || null,
+      path: $("f-path").value.trim(),
+    };
+    $("creds-save").disabled = true;
+    try {
+      const r = await api("/api/credentials", { method: "POST", body: JSON.stringify(body) });
+      closeOverlay("creds-overlay");
+      toast(r.restart_required ? "Credentials saved. Stop and start the bot to use them." : "Credentials saved", "ok");
+      if (!state.status || !state.status.account) { setText("login", r.login ?? "—"); setText("server", r.server ?? "—"); }
+    } catch (e) { showCredsError(e.message); }
+    finally { $("creds-save").disabled = false; $("f-password").value = ""; }
+  }
+  function showCredsError(msg) { const el = $("creds-error"); el.textContent = msg; el.hidden = false; }
+
+  // ------------------------------------------------------------ overlays
+  function openOverlay(id) { $(id).classList.add("open"); }
+  function closeOverlay(id) {
+    $(id).classList.remove("open");
+    if (id === "viewer-overlay") $("viewer-frame").src = "about:blank";
+  }
+  document.querySelectorAll(".overlay").forEach((ov) => {
+    ov.addEventListener("click", (e) => { if (e.target === ov || e.target.closest("[data-close]")) closeOverlay(ov.id); });
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") document.querySelectorAll(".overlay.open").forEach((ov) => closeOverlay(ov.id));
+  });
+
+  // ------------------------------------------------------------ polling
+  async function poll() {
+    if (state.polling) return;
+    state.polling = true;
+    try {
+      const [status, signal] = await Promise.all([api("/api/status"), api("/api/signal")]);
+      renderStatus(status);
+      renderSignal(signal);
+      let positions = null;
+      if (status.connected) {
+        try { positions = await api("/api/positions"); }
+        catch (e) { if (e.status !== 503) throw e; }  // 503: disconnected between requests
+      }
+      renderTrades(positions, positions === null);
+      state.lastOk = Date.now();
+      const conn = $("conn"); conn.className = "conn"; conn.textContent = "Live · 3s refresh";
+    } catch (e) {
+      const conn = $("conn"); conn.className = "conn bad"; conn.textContent = "Server unreachable";
+    } finally {
+      state.polling = false;
+    }
+  }
+
+  // ------------------------------------------------------------ wiring
+  $("toggle-btn").addEventListener("click", onToggle);
+  $("stop-btn").addEventListener("click", onStop);
+  $("mode-select").addEventListener("change", () => state.status && renderStatus(state.status));
+  $("edit-creds-btn").addEventListener("click", openCredentials);
+  $("creds-form").addEventListener("submit", saveCredentials);
+  $("trades").addEventListener("click", (e) => { const b = e.target.closest("[data-close-ticket]"); if (b) onCloseTicket(b); });
+  $("reports").addEventListener("click", (e) => { const b = e.target.closest("[data-report]"); if (b) openReport(b.dataset.report, b.dataset.name); });
+
+  api("/api/credentials").then((c) => {
+    if (!state.status || !state.status.account) { setText("login", c.login ?? "—"); setText("server", c.server ?? "—"); }
+  }).catch(() => {});
+  poll();
+  loadReports();
+  setInterval(() => { if (!document.hidden) poll(); }, POLL_MS);
+  setInterval(() => { if (!document.hidden) loadReports(); }, REPORTS_MS);
+})();
+</script>
+</body>
+</html>
