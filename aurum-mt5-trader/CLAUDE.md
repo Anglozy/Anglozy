@@ -27,6 +27,7 @@ aurum-mt5-trader/
 ├── main.py          # entry point: connect -> fetch bars -> pipeline -> report -> order
 ├── config/          # settings.py (credentials, trading settings), strategy.py (StrategyParameters)
 ├── src/
+│   ├── api/         # FastAPI dashboard backend: server.py (routes), state.py (bot thread, state, .env)
 │   ├── aurum/       # Jinja2 report generator, CSS styles, TradingView chart capturer
 │   ├── mt5/         # MT5 terminal connection, order placement, market data fetcher
 │   └── signals/     # FVG, structure, Order Block, session sweep detectors + parser.py pipeline
@@ -59,6 +60,10 @@ config ──▶ mt5 (MetaTrader5 I/O)        aurum (rendering)
   place orders. `mt5` and `aurum` never import each other or `signals`. The one I/O
   exception is `aurum/capturer.py` (Playwright screenshots of TradingView charts),
   which only `SignalPipeline` calls; a capture failure must never block a trade.
+- **`src/api`** sits on top of everything: `state.py` runs the same `SignalPipeline` as
+  `main.py` on a background thread. All MT5 calls go through `PipelineRunner`'s lock
+  (the MetaTrader5 module is process-global); GET endpoints only read cached state.
+  Never return the MT5 password from any endpoint.
 - **MT5 bar times are broker server time**, not UTC. Session logic takes a
   `utc_offset_hours`; never compare bar times to UTC hours directly.
 - **`config`** holds settings and parameters only — no logic beyond validation.
@@ -104,6 +109,7 @@ pytest                          # run the test suite
 python src/aurum/generator.py   # generate a sample XAUUSD report
 python main.py --dry-run        # run the live pipeline without sending orders
 python main.py --interval 60    # run every 60s, placing orders (demo accounts only)
+python src/api/server.py        # dashboard API on http://127.0.0.1:8000 (docs at /docs)
 ```
 
 `main.py` adds `src/` to `sys.path` itself. Other scripts importing `config` or `src/`

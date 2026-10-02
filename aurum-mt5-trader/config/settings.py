@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # ----------------------------------------------------------------- defaults
 DEFAULT_SYMBOL = "XAUUSD"
-DEFAULT_MAGIC_NUMBER = 20260930
+DEFAULT_MAGIC_NUMBER = 20261001
 DEFAULT_RISK_PERCENT = 1.0
 DEFAULT_DEVIATION_POINTS = 20
 DEFAULT_TIMEOUT_MS = 60_000
