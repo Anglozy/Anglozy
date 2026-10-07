@@ -295,6 +295,16 @@ main {
       <p class="note" id="last-message"></p>
       <p class="note err" id="last-error" hidden></p>
     </div>
+
+    <div class="card">
+      <div class="card-head"><h2 class="card-title">Risk Guards</h2></div>
+      <ul class="kv" id="risk-guards">
+        <li><span class="k">Kill zone</span><span class="v" id="risk-kz">—</span></li>
+        <li><span class="k">News</span><span class="v" id="risk-news">—</span></li>
+        <li><span class="k">Daily loss</span><span class="v" id="risk-daily">—</span></li>
+      </ul>
+      <p class="note" id="risk-note">Guard status appears after the first scan.</p>
+    </div>
   </section>
 
   <!-- Column 2: chart & signals -->
@@ -473,6 +483,8 @@ main {
     $("last-error").hidden = !s.last_error;
     $("last-error").textContent = s.last_error || "";
 
+    renderRisk(s.risk);
+
     const a = s.account;
     if (a) {
       setText("login", a.login); setText("server", a.server);
@@ -523,6 +535,34 @@ main {
     try { await api("/api/control", { method: "POST", body: JSON.stringify({ action: "stop" }) }); toast("Bot stopped"); }
     catch (e) { toast(e.message, "err"); }
     poll();
+  }
+
+  // ------------------------------------------------------------ risk guards
+  function guardCell(id, enabled, ok, text) {
+    const el = $(id);
+    if (!enabled) { el.innerHTML = `<span class="muted">Off</span>`; return; }
+    el.innerHTML = `<span class="${ok ? "up" : "down"}">${ok ? "●" : "■"}</span> ${esc(text)}`;
+  }
+  function renderRisk(r) {
+    if (!r) return;
+    const kz = r.killzone || {}, nw = r.news || {}, dl = r.daily_loss || {};
+    const kzTime = (iso) => {
+      try {
+        return new Date(iso).toLocaleString("en-GB", { timeZone: kz.timezone, weekday: "short", hour: "2-digit",
+          minute: "2-digit", timeZoneName: "short" });
+      } catch { return time(iso); }
+    };
+    guardCell("risk-kz", kz.enabled, kz.inside,
+      kz.inside ? `${kz.active} until ${kzTime(kz.ends_at)}` : (kz.next ? `Closed · ${kz.next} ${kzTime(kz.next_start)}` : "Closed"));
+    let newsText = "Clear";
+    if (nw.blocked) newsText = nw.event ? `Blackout · ${nw.event.currency} ${nw.event.title}` : "Calendar unavailable";
+    else if (nw.next_event) newsText = `Next ${nw.next_event.currency} ${nw.next_event.title} ${time(nw.next_event.time)}`;
+    guardCell("risk-news", nw.enabled, !nw.blocked, newsText);
+    guardCell("risk-daily", dl.enabled, dl.blocked === false,
+      dl.limit_amount !== undefined ? `${num(Math.max(dl.day_loss, 0))} / ${num(dl.limit_amount)} (${num(dl.used_percent, 1)}%)` : (dl.message || "—"));
+    const blocking = [kz.enabled && !kz.inside && kz.message, nw.blocked && nw.message, dl.blocked && dl.message].filter(Boolean);
+    $("risk-note").textContent = blocking.length ? blocking[0] : "All guards clear: setups can be traded.";
+    $("risk-note").className = blocking.length ? "note" : "note up";
   }
 
   // ------------------------------------------------------------ signals

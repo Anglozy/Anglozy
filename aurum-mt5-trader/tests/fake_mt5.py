@@ -56,6 +56,7 @@ class FakeMT5:
         self.rates: dict[int, np.ndarray] = {}  # timeframe -> bars incl. forming bar
         self.positions: list = []
         self.orders: list = []
+        self.deals: list = []  # history_deals_get results
 
     # ---- terminal
     def initialize(self, **kwargs):
@@ -122,3 +123,7 @@ class FakeMT5:
     def orders_get(self, symbol=None, ticket=None):
         return tuple(o for o in self.orders
                      if (symbol is None or o.symbol == symbol) and (ticket is None or o.ticket == ticket))
+
+    def history_deals_get(self, date_from, date_to):
+        lo, hi = date_from.timestamp(), date_to.timestamp()
+        return tuple(d for d in self.deals if lo <= d.time <= hi)

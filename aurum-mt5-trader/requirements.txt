@@ -7,3 +7,4 @@ playwright>=1.40
 fastapi>=0.110
 uvicorn>=0.29
 httpx>=0.27
+tzdata>=2024.1  # timezone database for zoneinfo on Windows (kill zones)

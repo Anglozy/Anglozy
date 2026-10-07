@@ -12,6 +12,9 @@ def clean_env(monkeypatch):
     for name in ("MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER", "AURUM_SYMBOL", "AURUM_ALLOW_LIVE_TRADING"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AURUM_CHARTS_ENABLED", "false")  # no real browser in these tests
+    # pipeline-flow tests: time-of-day and live-calendar guards are covered in test_risk.py
+    monkeypatch.setenv("AURUM_KILLZONES_ENABLED", "false")
+    monkeypatch.setenv("AURUM_NEWS_GUARD", "false")
     monkeypatch.setattr("mt5.connector.time.sleep", lambda _: None)
 
 

@@ -17,7 +17,7 @@ from api.state import (
     StateError,
     detector_stats,
 )
-from config.settings import MT5Credentials, Settings, TradingSettings, load_settings
+from config.settings import MT5Credentials, RiskSettings, Settings, TradingSettings, load_settings
 from config.strategy import StrategyParameters
 from tests.fake_mt5 import FakeMT5
 from tests.scenarios import BULLISH_ASK, BULLISH_BID, htf_bullish, ltf_bullish, to_rates
@@ -69,7 +69,9 @@ class FakeRunner:
 
 
 def settings_loader():
-    return Settings(MT5Credentials(), TradingSettings(magic_number=MAGIC))
+    # time-of-day and live-calendar guards are covered in test_risk.py; the daily loss guard stays on
+    return Settings(MT5Credentials(), TradingSettings(magic_number=MAGIC),
+                    risk=RiskSettings(news_enabled=False, killzones_enabled=False))
 
 
 @pytest.fixture(autouse=True)
@@ -373,8 +375,11 @@ def test_full_pipeline_through_api(paths, fake_terminal):
         assert status["status"] == "scanning"
         assert status["account"]["balance"] == 10_000.0
         assert status["account"]["trade_mode"] == "DEMO"
-        # existing magic-20261001 exposure means the pipeline will not stack a new trade
-        assert status["last_result"]["status"] == "skipped"
+        # open risk to stops (175 + 175 + 160 = 510 USD) already exceeds the 4% daily limit
+        # (400 USD), so the daily loss guard refuses to look for more trades
+        assert status["last_result"]["status"] == "blocked"
+        assert status["last_result"]["risk_guard"] == "daily_loss"
+        assert status["risk"]["daily_loss"]["worst_case_loss"] == 510.0
 
         positions = client.get("/api/positions").json()
         assert positions["magic"] == MAGIC
@@ -388,7 +393,6 @@ def test_full_pipeline_through_api(paths, fake_terminal):
         assert d["htf_bias"] == "Bullish"
         assert d["fvgs"]["unfilled"]["bullish"] >= 1
         assert any(s["session"] == "Asia" and s["side"] == "low" for s in d["sweeps"]["latest"])
-        assert signal["last_result"]["signal"]["entry"] == 2646.5
         json.dumps(signal)  # fully serialisable
 
 

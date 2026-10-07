@@ -32,6 +32,7 @@ from config.settings import load_settings  # noqa: E402
 from config.strategy import StrategyParameters  # noqa: E402
 from mt5.connector import MT5Connector, MT5Error  # noqa: E402
 from mt5.executor import MT5Executor  # noqa: E402
+from risk.manager import RiskManager  # noqa: E402
 from signals.parser import PipelineResult, SignalPipeline  # noqa: E402
 
 logger = logging.getLogger("aurum")
@@ -77,6 +78,7 @@ def run(args: argparse.Namespace, mt5_module: Any | None = None) -> int:
             executable_path=settings.charts.chromium_path,
         )
 
+    risk = RiskManager.from_settings(settings.risk, connector, cache_dir=ROOT / "cache")
     pipeline = SignalPipeline(
         connector,
         MT5Executor(connector),
@@ -84,6 +86,7 @@ def run(args: argparse.Namespace, mt5_module: Any | None = None) -> int:
         params,
         execute=not args.dry_run,
         chart_capturer=capturer,
+        risk_manager=risk,
     )
     exit_code = EXIT_OK
     try:

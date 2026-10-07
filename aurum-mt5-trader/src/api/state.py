@@ -35,6 +35,7 @@ from config.settings import Settings, load_settings
 from config.strategy import StrategyParameters
 from mt5.connector import MT5Connector
 from mt5.executor import MT5Executor, OrderResult
+from risk.manager import RiskManager
 from signals.fvg import detect_fvgs
 from signals.liquidity import detect_session_sweeps
 from signals.order_block import detect_order_blocks
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_REPORTS_DIR = PROJECT_ROOT / "reports"
+DEFAULT_CACHE_DIR = PROJECT_ROOT / "cache"
 
 PASSWORD_MASK = "********"
 
@@ -99,6 +101,8 @@ class PipelineRunner:
         reports_dir: Path = DEFAULT_REPORTS_DIR,
         mt5_module: Any | None = None,
         charts: bool | None = None,
+        cache_dir: Path = DEFAULT_CACHE_DIR,
+        risk_factory: Callable[[Settings, MT5Connector], RiskManager | None] | None = None,
     ) -> None:
         self.config = config
         self.settings_loader = settings_loader
@@ -106,6 +110,10 @@ class PipelineRunner:
         self.reports_dir = Path(reports_dir)
         self.mt5_module = mt5_module
         self.charts = charts
+        self.cache_dir = Path(cache_dir)
+        self.risk_factory = risk_factory or (
+            lambda settings, connector: RiskManager.from_settings(settings.risk, connector, cache_dir=self.cache_dir))
+        self.risk: RiskManager | None = None
         self._lock = threading.RLock()
         self.connector: MT5Connector | None = None
         self.executor: MT5Executor | None = None
@@ -127,6 +135,7 @@ class PipelineRunner:
             self.connector = connector
             self.executor = MT5Executor(connector)
             self.symbol = settings.trading.symbol
+            self.risk = self.risk_factory(settings, connector)
             self.pipeline = SignalPipeline(
                 connector,
                 self.executor,
@@ -134,6 +143,7 @@ class PipelineRunner:
                 self.params,
                 execute=not self.config.dry_run,
                 chart_capturer=capturer,
+                risk_manager=self.risk,
             )
             return self._account_locked()
 
@@ -142,10 +152,14 @@ class PipelineRunner:
             pipeline, connector = self._require()
             result = pipeline.run(self.symbol)
             stats = self._detector_stats(connector, pipeline)
+            risk = None
+            if self.risk is not None:
+                risk = self.risk.snapshot(pipeline._utc_offset(connector.get_tick(self.symbol)))
             return {
                 "result": summarize_result(result),
                 "detectors": stats,
                 "account": self._account_locked(),
+                "risk": risk,
             }
 
     def account(self) -> dict[str, Any]:
@@ -177,7 +191,7 @@ class PipelineRunner:
         with self._lock:
             if self.connector is not None:
                 self.connector.disconnect()
-            self.connector = self.executor = self.pipeline = None
+            self.connector = self.executor = self.pipeline = self.risk = None
 
     # ------------------------------------------------------------ helpers
     def _require(self) -> tuple[SignalPipeline, MT5Connector]:
@@ -252,6 +266,7 @@ def summarize_result(result: PipelineResult) -> dict[str, Any]:
         "message": result.message,
         "lot_size": result.lot_size,
         "report": result.report_path.name if result.report_path else None,
+        "risk_guard": result.risk_guard,
         "signal": None,
         "order": None,
     }
@@ -305,6 +320,7 @@ class BotStateManager:
         self.account: dict[str, Any] | None = None
         self.last_result: dict[str, Any] | None = None
         self.detectors: dict[str, Any] | None = None
+        self.risk: dict[str, Any] | None = None
 
     # ------------------------------------------------------------ control
     def start(self, dry_run: bool = True, interval_seconds: float | None = None) -> dict[str, Any]:
@@ -384,6 +400,7 @@ class BotStateManager:
                 "last_error": self.last_error,
                 "account": self.account,
                 "last_result": self.last_result,
+                "risk": self.risk,
             }
 
     def signal_view(self) -> dict[str, Any]:
@@ -460,6 +477,7 @@ class BotStateManager:
                 with self._lock:
                     self.last_result = cycle["result"]
                     self.detectors = cycle["detectors"]
+                    self.risk = cycle.get("risk")
                     self.account = cycle["account"]
                     self.last_error = None
             except Exception as exc:  # a failed pass is logged; the bot keeps scanning

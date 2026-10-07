@@ -68,11 +68,58 @@ class ChartSettings:
     chromium_path: str | None = None  # None = Playwright's own Chromium
 
 
+FOREXFACTORY_WEEK_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+DEFAULT_KILLZONES = (("London", "10:00", "12:00"), ("NY AM", "16:30", "19:00"))
+
+
+@dataclass(frozen=True)
+class RiskSettings:
+    """Pre-trade guards. Defaults are deliberately conservative for a funded account."""
+
+    # News guard: no new trades from `before` minutes ahead of a high-impact event
+    # until `after` minutes past it.
+    news_enabled: bool = True
+    news_currencies: tuple[str, ...] = ("USD",)
+    news_impacts: tuple[str, ...] = ("High",)
+    news_before_minutes: int = 30
+    news_after_minutes: int = 30
+    news_fail_closed: bool = True  # calendar unavailable -> block new trades
+    news_cancel_pending: bool = True  # cancel the bot's pending orders during a blackout
+    news_calendar_url: str = FOREXFACTORY_WEEK_URL
+    news_calendar_file: str | None = None  # local JSON in the same format, overrides the URL
+
+    # Kill zones: setups are only evaluated inside these windows (local times in killzone_timezone).
+    killzones_enabled: bool = True
+    killzone_timezone: str = "Africa/Nairobi"  # fixed UTC+3, no daylight saving
+    killzones: tuple[tuple[str, str, str], ...] = DEFAULT_KILLZONES
+    expire_orders_at_killzone_end: bool = True
+
+    # Daily loss guard (FundedNext-style). The bot stops opening trades well before the firm's limit.
+    daily_loss_enabled: bool = True
+    daily_loss_limit_percent: float = 4.0  # of start-of-day balance; firm limit is typically 5%
+    max_total_loss_percent: float | None = None  # of initial_balance, e.g. 9 for a 10% firm limit
+    initial_balance: float | None = None
+    day_reset_hour: int = 0  # broker server hour at which the trading day starts
+
+    def __post_init__(self) -> None:
+        if not 0 < self.daily_loss_limit_percent <= 50:
+            raise ValueError("daily_loss_limit_percent must be in (0, 50]")
+        if self.max_total_loss_percent is not None and not 0 < self.max_total_loss_percent <= 100:
+            raise ValueError("max_total_loss_percent must be in (0, 100]")
+        if self.max_total_loss_percent is not None and not self.initial_balance:
+            raise ValueError("initial_balance is required when max_total_loss_percent is set")
+        if self.news_before_minutes < 0 or self.news_after_minutes < 0:
+            raise ValueError("news window minutes must be >= 0")
+        if not 0 <= self.day_reset_hour <= 23:
+            raise ValueError("day_reset_hour must be 0-23")
+
+
 @dataclass(frozen=True)
 class Settings:
     credentials: MT5Credentials
     trading: TradingSettings
     charts: ChartSettings = field(default_factory=ChartSettings)
+    risk: RiskSettings = field(default_factory=RiskSettings)
 
 
 def load_settings(env_file: str | Path | None = PROJECT_ROOT / ".env") -> Settings:
@@ -102,7 +149,27 @@ def load_settings(env_file: str | Path | None = PROJECT_ROOT / ".env") -> Settin
         exchange=os.getenv("AURUM_TV_EXCHANGE") or "OANDA",
         chromium_path=os.getenv("AURUM_CHROMIUM_PATH") or None,
     )
-    return Settings(credentials=credentials, trading=trading, charts=charts)
+    risk = RiskSettings(
+        news_enabled=_env_bool("AURUM_NEWS_GUARD", default=True),
+        news_currencies=_env_list("AURUM_NEWS_CURRENCIES") or ("USD",),
+        news_impacts=_env_list("AURUM_NEWS_IMPACTS") or ("High",),
+        news_before_minutes=_env_int("AURUM_NEWS_BEFORE_MINUTES") if _env_int("AURUM_NEWS_BEFORE_MINUTES") is not None else 30,
+        news_after_minutes=_env_int("AURUM_NEWS_AFTER_MINUTES") if _env_int("AURUM_NEWS_AFTER_MINUTES") is not None else 30,
+        news_fail_closed=_env_bool("AURUM_NEWS_FAIL_CLOSED", default=True),
+        news_cancel_pending=_env_bool("AURUM_NEWS_CANCEL_PENDING", default=True),
+        news_calendar_url=os.getenv("AURUM_NEWS_CALENDAR_URL") or FOREXFACTORY_WEEK_URL,
+        news_calendar_file=os.getenv("AURUM_NEWS_CALENDAR_FILE") or None,
+        killzones_enabled=_env_bool("AURUM_KILLZONES_ENABLED", default=True),
+        killzone_timezone=os.getenv("AURUM_KILLZONE_TIMEZONE") or "Africa/Nairobi",
+        killzones=_env_killzones("AURUM_KILLZONES") or DEFAULT_KILLZONES,
+        expire_orders_at_killzone_end=_env_bool("AURUM_EXPIRE_AT_KILLZONE_END", default=True),
+        daily_loss_enabled=_env_bool("AURUM_DAILY_LOSS_GUARD", default=True),
+        daily_loss_limit_percent=_env_float("AURUM_DAILY_LOSS_LIMIT_PERCENT", 4.0),
+        max_total_loss_percent=_env_float("AURUM_MAX_TOTAL_LOSS_PERCENT", 0.0) or None,
+        initial_balance=_env_float("AURUM_INITIAL_BALANCE", 0.0) or None,
+        day_reset_hour=_env_int("AURUM_DAY_RESET_HOUR") or 0,
+    )
+    return Settings(credentials=credentials, trading=trading, charts=charts, risk=risk)
 
 
 def _env_int(name: str) -> int | None:
@@ -123,6 +190,23 @@ def _env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         raise ValueError(f"{name} must be a number, got {value!r}") from None
+
+
+def _env_list(name: str) -> tuple[str, ...]:
+    return tuple(x.strip() for x in os.getenv(name, "").split(",") if x.strip())
+
+
+def _env_killzones(name: str) -> tuple[tuple[str, str, str], ...]:
+    """``London=10:00-12:00,NY AM=16:30-19:00`` -> (("London", "10:00", "12:00"), ...)."""
+    zones = []
+    for item in _env_list(name):
+        try:
+            label, window = item.split("=", 1)
+            start, end = window.split("-", 1)
+        except ValueError:
+            raise ValueError(f"{name}: expected 'Name=HH:MM-HH:MM', got {item!r}") from None
+        zones.append((label.strip(), start.strip(), end.strip()))
+    return tuple(zones)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:

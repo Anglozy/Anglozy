@@ -20,9 +20,9 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -103,6 +103,26 @@ class SymbolSpec:
     freeze_level: int
     filling_mode: int  # bitmask: 1 = FOK allowed, 2 = IOC allowed
     trade_mode: int  # SYMBOL_TRADE_MODE_*: 0 disabled, 1 long only, 2 short only, 3 close only, 4 full
+
+
+@dataclass(frozen=True)
+class Exposure:
+    """An open position or pending order anywhere on the account (any magic number)."""
+
+    ticket: int
+    symbol: str
+    kind: Literal["position", "order"]
+    side: Literal["BUY", "SELL"]
+    volume: float
+    price: float  # current price for positions, order price for pending orders
+    stop_loss: float  # 0.0 = none
+    magic: int
+
+
+# ORDER_TYPE_* values for pending orders that buy: BUY_LIMIT, BUY_STOP, BUY_STOP_LIMIT
+_BUY_ORDER_TYPES = {0, 2, 4, 6}
+# DEAL_TYPE_BUY / DEAL_TYPE_SELL: trading deals (excludes balance, credit, bonus operations)
+_TRADE_DEAL_TYPES = {0, 1}
 
 
 # --------------------------------------------------------------------------- #
@@ -228,6 +248,42 @@ class MT5Connector:
             trade_mode=ACCOUNT_TRADE_MODES.get(info.trade_mode, str(info.trade_mode)),
             trade_allowed=bool(info.trade_allowed),
         )
+
+    def exposures(self) -> list[Exposure]:
+        """Every open position and pending order on the account, for risk checks."""
+        self._require_connection()
+        positions = self.mt5.positions_get()
+        orders = self.mt5.orders_get()
+        if positions is None or orders is None:
+            raise MT5DataError(f"Could not read positions/orders: {self._last_error()}")
+        out = [
+            Exposure(p.ticket, p.symbol, "position", "BUY" if p.type == 0 else "SELL",
+                     p.volume, p.price_current, p.sl or 0.0, p.magic)
+            for p in positions
+        ]
+        out += [
+            Exposure(o.ticket, o.symbol, "order", "BUY" if o.type in _BUY_ORDER_TYPES else "SELL",
+                     o.volume_current, o.price_open, o.sl or 0.0, o.magic)
+            for o in orders
+        ]
+        return out
+
+    def realized_pnl_since(self, since: datetime) -> float:
+        """Closed-trade P&L (profit + commission + swap + fee) of deals from ``since``.
+
+        ``since`` is broker server wall time expressed as a UTC-aware datetime,
+        the same convention MT5 uses for bar and tick times.
+        """
+        self._require_connection()
+        deals = self.mt5.history_deals_get(since, since + timedelta(days=7))
+        if deals is None:
+            raise MT5DataError(f"Could not read deal history: {self._last_error()}")
+        start = since.timestamp()
+        return float(sum(
+            d.profit + d.commission + d.swap + getattr(d, "fee", 0.0)
+            for d in deals
+            if d.type in _TRADE_DEAL_TYPES and d.time >= start
+        ))
 
     # ------------------------------------------------------------ market data
     def ensure_symbol(self, symbol: str | None = None) -> str:

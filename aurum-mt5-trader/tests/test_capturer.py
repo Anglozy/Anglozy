@@ -405,6 +405,8 @@ def main_env(monkeypatch, fake):
     for name in ("MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER", "AURUM_SYMBOL", "AURUM_CHROMIUM_PATH"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AURUM_TV_EXCHANGE", "FX")
+    monkeypatch.setenv("AURUM_KILLZONES_ENABLED", "false")
+    monkeypatch.setenv("AURUM_NEWS_GUARD", "false")
     monkeypatch.delenv("AURUM_CHARTS_ENABLED", raising=False)
     created = []
 

@@ -31,6 +31,7 @@ aurum-mt5-trader/
 │   │                #   templates/dashboard.html (single-page UI served at /)
 │   ├── aurum/       # Jinja2 report generator, CSS styles, TradingView chart capturer
 │   ├── mt5/         # MT5 terminal connection, order placement, market data fetcher
+│   ├── risk/        # pre-trade guards: kill zones, news blackout, daily loss limit
 │   └── signals/     # FVG, structure, Order Block, session sweep detectors + parser.py pipeline
 ├── templates/       # Aurum HTML output templates
 ├── tests/           # pytest suites (fake_mt5.py, scenarios.py hold shared fixtures)
@@ -67,6 +68,10 @@ config ──▶ mt5 (MetaTrader5 I/O)        aurum (rendering)
   Never return the MT5 password from any endpoint. The dashboard is plain HTML + vanilla
   JS (no build step); escape every server value before inserting it as HTML. Closing or
   cancelling only ever touches tickets carrying the bot's magic number.
+- **`src/risk`** guards run inside `SignalPipeline`: `pre_scan` (kill zone -> news -> daily
+  loss) before any setup search, `pre_trade` (news + daily loss incl. the new trade's
+  risk) before every order. Guards fail closed: if news risk or account risk can't be
+  determined, no new trade. Every new order path must go through `pre_trade`.
 - **MT5 bar times are broker server time**, not UTC. Session logic takes a
   `utc_offset_hours`; never compare bar times to UTC hours directly.
 - **`config`** holds settings and parameters only — no logic beyond validation.
@@ -84,6 +89,9 @@ config ──▶ mt5 (MetaTrader5 I/O)        aurum (rendering)
 
 ## Trading safety
 
+- Risk guards are on by default (`RiskSettings`); tests that exercise pipeline flow switch
+  the kill-zone and news guards off explicitly and `tests/test_risk.py` covers them with a
+  fixed clock and a stub calendar. Never let a test depend on the wall clock or network.
 - Default to a **demo account**. `MT5Connector` refuses real accounts unless
   `AURUM_ALLOW_LIVE_TRADING=true`.
 - Every order must carry a stop-loss. Position size is derived from risk % and stop

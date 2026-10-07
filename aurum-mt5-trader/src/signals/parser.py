@@ -46,6 +46,7 @@ from aurum.generator import (
 from config.strategy import StrategyParameters
 from mt5.connector import AccountSnapshot, MT5Connector, SymbolSpec, Tick
 from mt5.executor import MT5Executor, OrderResult, OrderValidationError, RiskTooSmallError
+from risk.manager import RiskManager
 
 from .bars import Direction, ohlc
 from .fvg import FairValueGap, detect_fvgs
@@ -385,7 +386,7 @@ def build_trade_report(
 # --------------------------------------------------------------------------- #
 # Pipeline
 # --------------------------------------------------------------------------- #
-PipelineStatus = Literal["no_setup", "skipped", "reported", "executed", "order_failed"]
+PipelineStatus = Literal["blocked", "no_setup", "skipped", "reported", "executed", "order_failed"]
 
 
 @dataclass
@@ -397,6 +398,7 @@ class PipelineResult:
     report_path: Path | None = None
     order: OrderResult | None = None
     chart_paths: tuple[str | None, str | None] = (None, None)  # HTF, LTF screenshots
+    risk_guard: str | None = None  # which guard blocked: killzone / news / daily_loss
 
 
 class SignalPipeline:
@@ -410,6 +412,7 @@ class SignalPipeline:
         params: StrategyParameters | None = None,
         execute: bool = True,
         chart_capturer: ChartCapturer | None = None,
+        risk_manager: RiskManager | None = None,
     ) -> None:
         self.connector = connector
         self.executor = executor
@@ -417,17 +420,28 @@ class SignalPipeline:
         self.params = params or StrategyParameters()
         self.execute = execute
         self.chart_capturer = chart_capturer
+        self.risk_manager = risk_manager
         self._last_signal_key: tuple | None = None
 
     def run(self, symbol: str | None = None) -> PipelineResult:
         p = self.params
         symbol = symbol or self.executor.settings.symbol
 
+        tick = self.connector.get_tick(symbol)
+        offset = self._utc_offset(tick)
+
+        risk = self.risk_manager
+        if risk is not None:
+            gate = risk.pre_scan(offset)
+            if not gate.allowed:
+                logger.info("%s: scan blocked by %s guard: %s", symbol, gate.guard, gate.reason)
+                if gate.guard == "news" and risk.settings.news_cancel_pending:
+                    self._cancel_pending(symbol, gate.reason)
+                return PipelineResult("blocked", gate.reason, risk_guard=gate.guard)
+
         htf = self.connector.get_bars(symbol, p.htf_timeframe, p.htf_bars)
         ltf = self.connector.get_bars(symbol, p.ltf_timeframe, p.ltf_bars)
-        tick = self.connector.get_tick(symbol)
         spec = self.connector.symbol_spec(symbol)
-        offset = self._utc_offset(tick)
 
         found = find_setup(htf, ltf, tick.bid, tick.ask, p, offset, spec.tick_size)
         if found.signal is None:
@@ -453,6 +467,12 @@ class SignalPipeline:
             logger.warning("%s: %s", symbol, exc)
             return PipelineResult("skipped", str(exc), signal)
 
+        if risk is not None:
+            gate = risk.pre_trade(signal.entry, signal.stop_loss, lot, symbol, offset)
+            if not gate.allowed:
+                logger.warning("%s: trade blocked by %s guard: %s", symbol, gate.guard, gate.reason)
+                return PipelineResult("blocked", gate.reason, signal, lot, risk_guard=gate.guard)
+
         charts = self._capture_charts(symbol)
         report_path = self._write_report(signal, symbol, lot, spec, charts)
 
@@ -465,6 +485,11 @@ class SignalPipeline:
         if p.order_expiry_minutes:
             # MT5 compares expiration with server time, which is what tick.time holds.
             expiration = tick.time + timedelta(minutes=p.order_expiry_minutes)
+        if risk is not None:
+            # An unfilled kill-zone order should not fill hours later in a dead session.
+            kz_end = risk.order_expiration(offset)
+            if kz_end is not None and (expiration is None or kz_end < expiration):
+                expiration = kz_end
         try:
             order = self.executor.place_limit_order(
                 signal.direction,
@@ -485,6 +510,16 @@ class SignalPipeline:
             return PipelineResult("executed", f"Order {order.order} placed ({order.retcode_name})",
                                   signal, lot, report_path, order, charts)
         return PipelineResult("order_failed", order.message, signal, lot, report_path, order, charts)
+
+    def _cancel_pending(self, symbol: str, reason: str) -> None:
+        """Cancel this bot's pending orders (e.g. ahead of high-impact news)."""
+        for order in self.executor.pending_orders(symbol):
+            try:
+                result = self.executor.cancel_order(order.ticket)
+                logger.warning("Cancelled pending order %s before news (%s): %s",
+                               order.ticket, reason, result.retcode_name)
+            except Exception:
+                logger.exception("Could not cancel pending order %s", order.ticket)
 
     def _capture_charts(self, symbol: str) -> tuple[str | None, str | None]:
         """Screenshot the HTF and LTF charts. Failures are logged and yield None:
