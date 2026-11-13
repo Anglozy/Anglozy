@@ -1,0 +1,254 @@
+//@version=6
+// =====================================================================================
+//  AURUM 15M ICT Mechanical v1.1 (fixed) - DEMO / FORWARD-TEST ONLY
+// -------------------------------------------------------------------------------------
+//  Backtest on 9 years of real XAUUSD data (pine/research/aurum.py): about 4-5 trades/year,
+//  roughly breakeven overall (-0.01R/trade); lost in 2017-21, won in 2022-26.
+//  It has NOT shown a consistent edge. Run it on a demo account only.
+//
+//  Fixes vs v1:
+//   1. Webhook alerts now work: every order carries a JSON alert_message
+//      (alertcondition() does not fire from strategy scripts).
+//   2. Position size floors to your broker's quantity step and SKIPS the trade if the
+//      size is below the minimum (v1 forced at least 1 unit, which could exceed your risk %).
+//   3. Long and short can no longer both fire on the same bar.
+//   4. Trading costs are built in ($0.25 per ounce per side, like Gold Trend Rider).
+//   5. Optional: move the stop to breakeven after TP1 (off by default, same as v1 behaviour).
+//  Entry/exit logic is otherwise identical to v1.
+// =====================================================================================
+strategy("AURUM 15M ICT Mechanical v1.1 (demo)", shorttitle = "AURUM 15M", overlay = true,
+     initial_capital = 6000, currency = currency.USD,
+     default_qty_type = strategy.fixed, default_qty_value = 1,
+     process_orders_on_close = true, pyramiding = 0,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 0.25,
+     slippage = 0, margin_long = 0, margin_short = 0)
+
+// ===================== INPUTS =====================
+tz         = "Africa/Nairobi"                 // EAT (UTC+3, no daylight saving)
+asiaSess   = input.session("0200-0900", "Asia range (EAT)", group = "Sessions")
+londonSess = input.session("1000-1200", "London kill zone (EAT)", group = "Sessions")
+nySess     = input.session("1630-1900", "NY AM kill zone (EAT)", group = "Sessions")
+
+riskPct      = input.float(1.0, "Risk per trade (%)", minval = 0.1, step = 0.1, group = "Risk")
+dailyLossPct = input.float(3.0, "Daily loss limit (%)", minval = 0.5, step = 0.5, group = "Risk")
+maxTrades    = input.int(4, "Max trades per day", minval = 1, group = "Risk")
+minRR        = input.float(2.0, "Minimum R:R", minval = 0.5, step = 0.1, group = "Risk")
+tp1R         = input.float(2.0, "TP1 (R multiple, 50% closed)", minval = 0.5, step = 0.1, group = "Risk")
+beAfterTP1   = input.bool(false, "Move stop to breakeven after TP1", group = "Risk")
+qtyStep      = input.float(0.01, "Quantity step (units your broker accepts)", minval = 0.0001, group = "Risk")
+minQty       = input.float(0.01, "Minimum quantity (skip trade if smaller)", minval = 0.0001, group = "Risk")
+
+slBuffer = input.float(0.5, "SL buffer beyond sweep (price units)", minval = 0, step = 0.1, group = "Structure")
+eqBand   = input.float(3.5, "Equilibrium block (+/- price units)", minval = 0, step = 0.1, group = "Structure")
+dispMult = input.float(1.0, "Displacement body >= x ATR(14)", minval = 0.1, step = 0.1, group = "Structure")
+mssLen   = input.int(5, "MSS lookback (bars)", minval = 2, group = "Structure")
+useSMT   = input.bool(true, "Require DXY SMT divergence", group = "Structure")
+smtLen   = input.int(20, "SMT lookback (bars)", minval = 5, group = "Structure")
+dxySym   = input.symbol("TVC:DXY", "DXY symbol", group = "Structure")
+
+alertSym = input.string("XAUUSD", "Symbol name sent in alerts", group = "Webhook alerts")
+
+// ===================== SESSIONS =====================
+inAsia   = not na(time(timeframe.period, asiaSess, tz))
+inLondon = not na(time(timeframe.period, londonSess, tz))
+inNY     = not na(time(timeframe.period, nySess, tz))
+inKZ     = inLondon or inNY
+
+var float asiaHi = na
+var float asiaLo = na
+if inAsia and not inAsia[1]
+    asiaHi := high
+    asiaLo := low
+else if inAsia
+    asiaHi := math.max(asiaHi, high)
+    asiaLo := math.min(asiaLo, low)
+
+// ===================== LEVELS =====================
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1], lookahead = barmerge.lookahead_on)
+atr = ta.atr(14)
+eq  = (asiaHi + asiaLo) / 2
+nearEq = math.abs(close - eq) <= eqBand
+refLo  = na(asiaLo) ? pdl : math.min(asiaLo, pdl)
+refHi  = na(asiaHi) ? pdh : math.max(asiaHi, pdh)
+
+// DXY (inverse to gold): SMT = gold sweeps but DXY fails to confirm
+dxyH = request.security(dxySym, timeframe.period, high)
+dxyL = request.security(dxySym, timeframe.period, low)
+dxyNoNewHigh = dxyH <= ta.highest(dxyH[1], smtLen)
+dxyNoNewLow  = dxyL >= ta.lowest(dxyL[1], smtLen)
+
+// ===================== DAILY RISK GATES =====================
+newDay = ta.change(time("D")) != 0
+var int   tradesToday = 0
+var float dayStartEq  = strategy.equity
+if newDay
+    tradesToday := 0
+    dayStartEq  := strategy.equity
+dailyLossHit = (dayStartEq - strategy.equity) / dayStartEq * 100 >= dailyLossPct
+canTrade = tradesToday < maxTrades and not dailyLossHit and not nearEq and strategy.position_size == 0
+
+// ===================== SIZING =====================
+calcQty(float riskPerUnit) =>
+    float q = (strategy.equity * riskPct / 100) / (riskPerUnit * syminfo.pointvalue)
+    q := math.floor(q / qtyStep) * qtyStep
+    q >= minQty ? q : 0.0
+
+jsonEntry(string side, float q, float sl, float tp1, float tp2) =>
+    '{"action":"' + side + '","symbol":"' + alertSym + '","qty":' + str.tostring(q) +
+     ',"sl":' + str.tostring(sl, format.mintick) + ',"tp1":' + str.tostring(tp1, format.mintick) +
+     ',"tp2":' + str.tostring(tp2, format.mintick) + ',"strategy":"AURUM"}'
+
+// ===================== SETUP STATE =====================
+var bool  bullArmed = false
+var bool  bullFVG   = false
+var float bullSL    = na
+var float bullFvgLo = na
+var float bullFvgHi = na
+var bool  bullSMT   = false
+
+var bool  bearArmed = false
+var bool  bearFVG   = false
+var float bearSL    = na
+var float bearFvgLo = na
+var float bearFvgHi = na
+var bool  bearSMT   = false
+
+var float tEntry = na
+var float tTP1   = na
+var bool  tpDone = false
+var int   tDir   = 0
+var float tInitQ = na
+
+// Sweeps (inside kill zones only)
+bullSweep = inKZ and not na(refLo) and low < refLo and close > refLo
+bearSweep = inKZ and not na(refHi) and high > refHi and close < refHi
+
+// Retest of the FVG (evaluated BEFORE this bar's state updates)
+bullRetest = bullArmed and bullFVG and inKZ and low <= bullFvgHi and close > bullFvgLo
+bearRetest = bearArmed and bearFVG and inKZ and high >= bearFvgLo and close < bearFvgHi
+
+// ===================== ENTRIES =====================
+bool enteredThisBar = false
+
+if bullRetest
+    bullArmed := false                       // one setup, one kill
+    bullFVG   := false
+    if canTrade and (not useSMT or bullSMT)
+        entryPx = close
+        risk    = entryPx - bullSL
+        tp1     = entryPx + tp1R * risk
+        tp2     = pdh
+        rrOK    = risk > 0 and (tp2 - entryPx) >= math.max(minRR, tp1R) * risk
+        qty     = rrOK ? calcQty(risk) : 0.0
+        if qty > 0
+            strategy.entry("LONG", strategy.long, qty = qty, comment = "AURUM L",
+                 alert_message = jsonEntry("buy", qty, bullSL, tp1, tp2))
+            strategy.exit("LONG TP1", "LONG", qty_percent = 50, limit = tp1, stop = bullSL,
+                 alert_message = '{"action":"close_partial","symbol":"' + alertSym + '","percent":50}')
+            strategy.exit("LONG TP2", "LONG", limit = tp2, stop = bullSL,
+                 alert_message = '{"action":"close_all","symbol":"' + alertSym + '"}')
+            tradesToday += 1
+            enteredThisBar := true
+            tEntry := entryPx
+            tTP1   := tp1
+            tpDone := false
+            tDir   := 1
+            tInitQ := qty
+
+if bearRetest
+    bearArmed := false
+    bearFVG   := false
+    if canTrade and not enteredThisBar and (not useSMT or bearSMT)
+        entryPx = close
+        risk    = bearSL - entryPx
+        tp1     = entryPx - tp1R * risk
+        tp2     = pdl
+        rrOK    = risk > 0 and (entryPx - tp2) >= math.max(minRR, tp1R) * risk
+        qty     = rrOK ? calcQty(risk) : 0.0
+        if qty > 0
+            strategy.entry("SHORT", strategy.short, qty = qty, comment = "AURUM S",
+                 alert_message = jsonEntry("sell", qty, bearSL, tp1, tp2))
+            strategy.exit("SHORT TP1", "SHORT", qty_percent = 50, limit = tp1, stop = bearSL,
+                 alert_message = '{"action":"close_partial","symbol":"' + alertSym + '","percent":50}')
+            strategy.exit("SHORT TP2", "SHORT", limit = tp2, stop = bearSL,
+                 alert_message = '{"action":"close_all","symbol":"' + alertSym + '"}')
+            tradesToday += 1
+            enteredThisBar := true
+            tEntry := entryPx
+            tTP1   := tp1
+            tpDone := false
+            tDir   := -1
+            tInitQ := qty
+
+// Optional breakeven after TP1 fills (detected by the position shrinking)
+if beAfterTP1 and strategy.position_size != 0 and not tpDone and not na(tInitQ)
+    if math.abs(strategy.position_size) < tInitQ - qtyStep / 2
+        tpDone := true
+        beStop = strategy.position_avg_price
+        if tDir == 1
+            strategy.exit("LONG TP2", "LONG", limit = pdh, stop = beStop,
+                 alert_message = '{"action":"close_all","symbol":"' + alertSym + '","sl_update":' + str.tostring(beStop, format.mintick) + '}')
+        else
+            strategy.exit("SHORT TP2", "SHORT", limit = pdl, stop = beStop,
+                 alert_message = '{"action":"close_all","symbol":"' + alertSym + '","sl_update":' + str.tostring(beStop, format.mintick) + '}')
+
+// ===================== STATE UPDATES =====================
+if bullSweep
+    bullArmed := true
+    bullFVG   := false
+    bullSL    := low - slBuffer
+    bullSMT   := dxyNoNewHigh
+if bearSweep
+    bearArmed := true
+    bearFVG   := false
+    bearSL    := high + slBuffer
+    bearSMT   := dxyNoNewLow
+
+// Bullish displacement (bar 1) + MSS + FVG (bar 2 vs bar 0)
+bullDisp = close[1] > open[1] and (close[1] - open[1]) >= dispMult * atr[1]
+bullMSS  = close[1] > ta.highest(high[2], mssLen)
+bullGap  = low > high[2]
+if bullArmed and not bullFVG and inKZ and bullDisp and bullMSS and bullGap
+    bullFVG   := true
+    bullFvgLo := high[2]
+    bullFvgHi := low
+
+// Bearish displacement + MSS + FVG
+bearDisp = close[1] < open[1] and (open[1] - close[1]) >= dispMult * atr[1]
+bearMSS  = close[1] < ta.lowest(low[2], mssLen)
+bearGap  = high < low[2]
+if bearArmed and not bearFVG and inKZ and bearDisp and bearMSS and bearGap
+    bearFVG   := true
+    bearFvgLo := high
+    bearFvgHi := low[2]
+
+// Plans expire when the kill zone closes
+if not inKZ
+    bullArmed := false
+    bullFVG   := false
+    bearArmed := false
+    bearFVG   := false
+
+// ===================== PLOTS & ALERTS =====================
+plot(pdh, "PDH", color = color.red, linewidth = 1)
+plot(pdl, "PDL", color = color.green, linewidth = 1)
+plot(asiaHi, "Asia High", color = color.orange, style = plot.style_linebr)
+plot(asiaLo, "Asia Low", color = color.orange, style = plot.style_linebr)
+plot(eq, "Equilibrium", color = color.new(color.gray, 40), style = plot.style_linebr)
+plotshape(bullSweep, "Bull sweep", shape.triangleup, location.belowbar, color.aqua, size = size.tiny)
+plotshape(bearSweep, "Bear sweep", shape.triangledown, location.abovebar, color.fuchsia, size = size.tiny)
+plotshape(bullRetest, "Long retest", shape.labelup, location.belowbar, color.green, text = "L", textcolor = color.white)
+plotshape(bearRetest, "Short retest", shape.labeldown, location.abovebar, color.red, text = "S", textcolor = color.white)
+bgcolor(inKZ ? color.new(color.yellow, 92) : na)
+
+// Plain-text notifications for manual traders (work from strategies, unlike alertcondition)
+if bullRetest
+    alert("AURUM long retest on " + syminfo.ticker + " 15M at " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if bearRetest
+    alert("AURUM short retest on " + syminfo.ticker + " 15M at " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+if barstate.islast
+    var label demo = label.new(bar_index, high, "AURUM: DEMO / FORWARD-TEST ONLY\nNo consistent edge in 9-year backtest",
+         color = color.new(color.orange, 0), textcolor = color.black, style = label.style_label_down, size = size.small)
+    label.set_xy(demo, bar_index, high)

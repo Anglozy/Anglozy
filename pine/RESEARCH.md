@@ -46,6 +46,19 @@ Yearly R per trade: 2017 +0.30, 2018 −0.07, 2019 +0.40, 2020 +0.65, 2021 −0.
 | EURUSD | Lost money on untouched years (−0.08R) and did no better than random. **Don't run this bot on FX.** |
 | EURJPY / GBPJPY / CHFJPY (never used for tuning) | −0.00 / +0.04 / +0.07R: roughly breakeven |
 
+### ICT-style filters tested on top (plan 3)
+
+Each filter was judged on 2017–2021 first, with adopt-only-if-clearly-better as the rule. The untouched years were run once afterwards for information.
+
+| Filter | 2017–21: trades / R per trade / total R | 2022–26: trades / R per trade / total R | Verdict |
+|---|---|---|---|
+| **None (current rules)** | 72 / +0.235 / 16.9 | 101 / +0.207 / 20.9 | **Kept** |
+| Kill-zone timing (London / NY AM only) | 66 / +0.189 / 12.5 | 87 / +0.156 / 13.6 | Worse in both periods |
+| Skip Asian-session signals | 65 / +0.250 / 16.3 | 96 / +0.194 / 18.6 | No real change; optional switch, off |
+| Recent sweep of a 10-bar swing low | 16 / +0.325 / 5.2 | 21 / +0.212 / 4.4 | Cuts trades 78%, total profit much lower; optional switch, off |
+| Recent sweep of the previous-day low | 16 / +0.087 / 1.4 | 20 / +0.472 / 9.4 | Results flip between periods (noise); rejected |
+| Breakout candle closes in the upper half | 70 / +0.238 / 16.7 | 102 / +0.194 / 19.7 | No change |
+
 ### What to expect
 
 * **About 19 trades a year** (1–2 a month), holding about 2 days on average.
@@ -65,14 +78,26 @@ Yearly R per trade: 2017 +0.30, 2018 −0.07, 2019 +0.40, 2020 +0.65, 2021 −0.
 | RSI(2) dip-buying in a higher-timeframe trend, 1H/4H | 60–70% win rate but about zero expectancy |
 | Same breakout on the 1H chart | Lost money after costs |
 
+## On-chart panel
+
+TradingView's *Profitable trades* % counts the partial exit and the runner as two separate trades, which inflates it (for example 80.8% on 2023–2026). The script draws a small panel in the top-right corner that counts **whole positions**. Compare that number with the research figure (about 72%).
+
+## AURUM 15M (demo only)
+
+`aurum_15m_demo.pine` is the user-supplied ICT strategy with its bugs fixed:
+* working webhook alerts (JSON `alert_message` on every order, plus `alert()` notifications)
+* sizing that respects your quantity step and skips a trade rather than forcing 1 unit
+* no same-bar long-and-short
+* the same built-in costs as Gold Trend Rider
+* an optional breakeven after TP1
+
+The 9-year backtest (`research/aurum.py`) shows 42 trades, 43% win rate, −0.01R per trade overall: it lost in 2017–21 (−0.40R) and won in 2022–26 (+0.29R). **Forward-test it on demo only.** Run it on the XAUUSD **15m** chart.
+
 ## TradingView setup
 
 1. Open **XAUUSD** on the **4H** chart. Your feed (OANDA, FOREX.com, Pepperstone…) will differ a little from the test data.
 2. Pine Editor → paste `gold_trend_rider.pine` → *Add to chart*.
-3. Strategy **Settings → Properties**:
-   * Initial capital: your account size.
-   * **Slippage**: enter ticks equal to about $0.30, which covers half the spread plus slippage. On a 0.01 tick feed that's 30 ticks; on a 0.001 tick feed, 300.
-   * Leave *Recalculate on every tick* off.
+3. **Costs are built into the script.** It charges $0.25 per ounce on entry and again on exit ($0.50 round trip), which covers spread plus slippage. You don't need to change Slippage or Commission in *Settings → Properties*. Just set *Initial capital* to your account size. The one exception: if your feed's contract is 100 oz rather than 1 oz, set Commission to 25 USD per contract.
 4. **Settings → Inputs → Quantity step**: set it to your broker's minimum size, in the units TradingView uses for the symbol (usually ounces for CFD feeds). Check `syminfo.pointvalue` with your broker.
 5. **News:** keep *Auto-block NFP* on, and add CPI/FOMC times in UTC to the event list (`2026-12-16 19:00`).
 6. **Webhook alerts:** *Create Alert* → Condition: **Gold Trend Rider 4H** → **Order fills only** → Webhook URL from your bridge (PineConnector, TradersPost, 3Commas…) → Message: `{{strategy.order.alert_message}}`. The JSON payloads are:
