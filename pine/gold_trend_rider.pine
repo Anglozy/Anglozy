@@ -1,0 +1,217 @@
+//@version=6
+// =====================================================================================
+//  Gold Trend Rider (4H) - research-validated breakout with scale-out
+// -------------------------------------------------------------------------------------
+//  Built for XAUUSD on the 4-hour chart. Rules were tuned on 2017-2021 and then tested
+//  once on untouched 2022-2026 data (see pine/RESEARCH.md for the full results).
+//
+//  ENTRY (long; shorts are optional and OFF by default - they lost money in both periods)
+//   1. 4H close breaks above the highest high of the previous 55 bars (Donchian breakout)
+//   2. 4H close above the 4H EMA(200)                     -> chart-timeframe trend
+//   3. Yesterday's daily close above the daily EMA(100)    -> higher-timeframe trend
+//   4. Not inside a news blackout window (auto NFP + your own event list)
+//   Order fills at the next bar's open.
+//
+//  EXIT
+//   - Initial stop: 2.0 x ATR(14) from entry
+//   - Take 50% off at +0.5R, then move the stop to breakeven (+ cost buffer)
+//   - Runner: chandelier trailing stop = highest high since entry - 3.0 x ATR(14)
+//
+//  RISK: position size = equity x risk% / (stop distance x point value)
+//  Non-repainting: daily values use the previous COMPLETED daily bar.
+// =====================================================================================
+strategy("Gold Trend Rider 4H", shorttitle = "GTR-4H", overlay = true,
+     initial_capital = 10000, currency = currency.USD,
+     default_qty_type = strategy.fixed, default_qty_value = 1,
+     pyramiding = 0, calc_on_every_tick = false, process_orders_on_close = false,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 0.0,
+     slippage = 0, margin_long = 0, margin_short = 0)
+
+// ---------------- Inputs ----------------
+grpS = "Signal"
+donLen     = input.int(55, "Breakout lookback (bars)", minval = 5, group = grpS)
+emaLen     = input.int(200, "Chart EMA (trend)", minval = 10, group = grpS)
+dEmaLen    = input.int(100, "Daily EMA (higher-timeframe trend)", minval = 10, group = grpS)
+useDaily   = input.bool(true, "Use daily trend filter", group = grpS)
+allowLong  = input.bool(true, "Allow longs", group = grpS)
+allowShort = input.bool(false, "Allow shorts (NOT validated - lost money in tests)", group = grpS)
+
+grpX = "Exits"
+atrLen     = input.int(14, "ATR length", minval = 1, group = grpX)
+slATR      = input.float(2.0, "Initial stop (x ATR)", minval = 0.5, step = 0.1, group = grpX)
+partR      = input.float(0.5, "Partial take-profit at (R)", minval = 0.1, step = 0.05, group = grpX)
+partPct    = input.int(50, "Partial size (%)", minval = 1, maxval = 99, group = grpX)
+useBE      = input.bool(true, "Move stop to breakeven after partial", group = grpX)
+beBuf      = input.float(0.40, "Breakeven buffer (price units, covers spread+slippage)", minval = 0.0, step = 0.05, group = grpX)
+trailATR   = input.float(3.0, "Trailing stop (x ATR from best price)", minval = 0.5, step = 0.1, group = grpX)
+
+grpR = "Risk"
+riskPct    = input.float(0.5, "Risk per trade (% of equity)", minval = 0.05, maxval = 5.0, step = 0.05, group = grpR)
+qtyStep    = input.float(0.01, "Quantity step (units your broker accepts)", minval = 0.0001, group = grpR)
+maxQty     = input.float(1000000, "Max quantity", minval = 0.0001, group = grpR)
+
+grpN = "News blackout (blocks NEW entries only)"
+useNFP     = input.bool(true, "Auto-block US NFP (1st Friday 08:30 New York)", group = grpN)
+newsMin    = input.int(30, "Blackout minutes before event", minval = 0, group = grpN)
+newsList   = input.text_area("2026-12-10 19:00\n2026-12-16 19:00", "Extra events (UTC, one per line: YYYY-MM-DD HH:MM)", group = grpN)
+
+grpA = "Webhook alerts"
+alertSym   = input.string("XAUUSD", "Symbol name sent in alerts", group = grpA)
+
+grpV = "Visuals"
+showLevels = input.bool(true, "Plot breakout channel and stops", group = grpV)
+
+// ---------------- Timeframe guard ----------------
+if barstate.islast and timeframe.in_seconds() != 4 * 60 * 60
+    var label warn = label.new(bar_index, high, "⚠ Validated on the 4H chart only.\nCurrent timeframe: " + timeframe.period,
+         color = color.new(color.orange, 0), textcolor = color.black, style = label.style_label_down)
+
+// ---------------- Indicators ----------------
+atr   = ta.atr(atrLen)
+emaC  = ta.ema(close, emaLen)
+hiN   = ta.highest(high, donLen)[1]
+loN   = ta.lowest(low, donLen)[1]
+// previous completed daily bar (non-repainting idiom)
+dClose = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_on)
+dEma   = request.security(syminfo.tickerid, "D", ta.ema(close, dEmaLen)[1], lookahead = barmerge.lookahead_on)
+dUp    = not useDaily or dClose > dEma
+dDn    = not useDaily or dClose < dEma
+
+// ---------------- News blackout ----------------
+// Entry fills at the open of the NEXT bar; block if any event falls in [nextOpen - newsMin, nextOpen + 4H)
+nextOpen = time_close
+barLenMs = timeframe.in_seconds() * 1000
+inWindow(int evMs) =>
+    evMs >= nextOpen - newsMin * 60000 and evMs < nextOpen + barLenMs
+
+var array<int> events = array.new<int>()
+if barstate.isfirst
+    lines = str.split(newsList, "\n")
+    for ln in lines
+        s = str.trim(ln)
+        if str.length(s) >= 16
+            yy = int(str.tonumber(str.substring(s, 0, 4)))
+            mo = int(str.tonumber(str.substring(s, 5, 7)))
+            dd = int(str.tonumber(str.substring(s, 8, 10)))
+            hh = int(str.tonumber(str.substring(s, 11, 13)))
+            mi = int(str.tonumber(str.substring(s, 14, 16)))
+            if not na(yy) and not na(mo) and not na(dd) and not na(hh) and not na(mi)
+                events.push(timestamp("UTC", yy, mo, dd, hh, mi))
+
+nfpBlock() =>
+    bool blk = false
+    // check the day of the next bar and the day after (covers bars spanning midnight)
+    for k = 0 to 1
+        t  = nextOpen + k * 86400000
+        y  = year(t, "America/New_York")
+        m  = month(t, "America/New_York")
+        d  = dayofmonth(t, "America/New_York")
+        if dayofweek(t, "America/New_York") == dayofweek.friday and d <= 7
+            if inWindow(timestamp("America/New_York", y, m, d, 8, 30))
+                blk := true
+    blk
+
+newsBlock = false
+if useNFP and nfpBlock()
+    newsBlock := true
+if events.size() > 0
+    for ev in events
+        if inWindow(ev)
+            newsBlock := true
+
+// ---------------- Signals ----------------
+longSig  = allowLong  and close > hiN and close > emaC and dUp and not newsBlock
+shortSig = allowShort and close < loN and close < emaC and dDn and not newsBlock
+
+// ---------------- Position sizing ----------------
+riskDist = slATR * atr
+calcQty(float dist) =>
+    float q = (strategy.equity * riskPct / 100.0) / (dist * syminfo.pointvalue)
+    q := math.floor(q / qtyStep) * qtyStep
+    math.min(q, maxQty)
+
+// ---------------- Trade state ----------------
+var float tRisk   = na   // 1R in price
+var float tEntry  = na
+var float tStop   = na
+var float tBest   = na
+var float tInitQ  = na
+var bool  tPart   = false
+var int   tDir    = 0
+
+ticks(float px) => math.max(1, math.round(px / syminfo.mintick))
+
+flat = strategy.position_size == 0
+
+// Reset state after a position closes (runs BEFORE a possible new entry on the same bar)
+if flat and strategy.position_size[1] != 0
+    tEntry := na
+    tStop  := na
+    tBest  := na
+    tPart  := false
+    tDir   := 0
+
+// New entry (signal on close -> fills next open). Exits are attached immediately using
+// tick offsets from the actual fill price, so the stop is live on the fill bar itself.
+if flat and (longSig or shortSig) and not na(riskDist) and riskDist > 0
+    q = calcQty(riskDist)
+    if q > 0
+        isL   = longSig
+        dirS  = isL ? "buy" : "sell"
+        slEst = isL ? close - riskDist : close + riskDist
+        tpEst = isL ? close + partR * riskDist : close - partR * riskDist
+        msgE  = '{"action":"' + dirS + '","symbol":"' + alertSym + '","qty":' + str.tostring(q) +
+             ',"sl":' + str.tostring(slEst, format.mintick) + ',"tp1":' + str.tostring(tpEst, format.mintick) +
+             ',"risk_pct":' + str.tostring(riskPct) + ',"note":"est. levels; fill at next open"}'
+        strategy.entry(isL ? "L" : "S", isL ? strategy.long : strategy.short, qty = q, alert_message = msgE)
+        id = isL ? "L" : "S"
+        strategy.exit(id + "-TP1", id, qty_percent = partPct, profit = ticks(partR * riskDist), loss = ticks(riskDist),
+             alert_message = '{"action":"close_partial","symbol":"' + alertSym + '","percent":' + str.tostring(partPct) + '}')
+        strategy.exit(id + "-RUN", id, loss = ticks(riskDist),
+             alert_message = '{"action":"close_all","symbol":"' + alertSym + '"}')
+        tRisk  := riskDist
+        tInitQ := q
+        tPart  := false
+        tDir   := isL ? 1 : -1
+        tEntry := na
+        tStop  := na
+        tBest  := na
+
+// Manage an open position at each bar close (new stop applies from the next bar)
+if not flat
+    if na(tEntry)
+        tEntry := strategy.position_avg_price
+        tStop  := tEntry - tDir * tRisk
+        tBest  := tEntry
+    if math.abs(strategy.position_size) < tInitQ - qtyStep / 2
+        tPart := true
+    if tDir == 1
+        tBest := math.max(tBest, high)
+        tStop := math.max(tStop, tBest - trailATR * atr)
+        if tPart and useBE
+            tStop := math.max(tStop, tEntry + beBuf)
+    else
+        tBest := math.min(tBest, low)
+        tStop := math.min(tStop, tBest + trailATR * atr)
+        if tPart and useBE
+            tStop := math.min(tStop, tEntry - beBuf)
+    id = tDir == 1 ? "L" : "S"
+    if not tPart
+        strategy.exit(id + "-TP1", id, qty_percent = partPct, limit = tEntry + tDir * partR * tRisk, stop = tStop,
+             alert_message = '{"action":"close_partial","symbol":"' + alertSym + '","percent":' + str.tostring(partPct) + '}')
+    strategy.exit(id + "-RUN", id, stop = tStop,
+         alert_message = '{"action":"close_all","symbol":"' + alertSym + '","sl_update":' + str.tostring(tStop, format.mintick) + '}')
+
+// ---------------- Visuals ----------------
+plot(showLevels ? hiN : na, "Breakout high", color = color.new(color.teal, 40), style = plot.style_stepline)
+plot(showLevels and allowShort ? loN : na, "Breakout low", color = color.new(color.maroon, 40), style = plot.style_stepline)
+plot(emaC, "EMA 200", color = color.new(color.orange, 0), linewidth = 2)
+plot(showLevels and not flat ? tStop : na, "Active stop", color = color.new(color.red, 0), style = plot.style_linebr, linewidth = 2)
+plot(showLevels and not flat and not tPart ? tEntry + tDir * partR * tRisk : na, "Partial target", color = color.new(color.green, 0), style = plot.style_linebr)
+plotshape(longSig and flat, "Long signal", shape.triangleup, location.belowbar, color.new(color.green, 0), size = size.small)
+plotshape(shortSig and flat, "Short signal", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.small)
+bgcolor(newsBlock ? color.new(color.gray, 85) : na, title = "News blackout")
+bgcolor(useDaily ? (dUp ? color.new(color.green, 95) : color.new(color.red, 97)) : na, title = "Daily trend")
+
+// Order-fill alerts carry the JSON webhook payloads (alert_message). Create the alert with
+// condition = this strategy, "Order fills only", message = {{strategy.order.alert_message}}
